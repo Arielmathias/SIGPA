@@ -30,6 +30,7 @@ class Cliente(Base):
         nullable=True,
     )
     activo: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    opt_out_whatsapp: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     notas: Mapped[str | None] = mapped_column(Text, nullable=True)
     creado_en: Mapped[datetime] = mapped_column(
         DateTime(timezone=False), nullable=False, server_default=func.now()

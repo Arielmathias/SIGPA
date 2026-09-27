@@ -72,6 +72,7 @@ async def recordatorio_diario(
                 select(Cliente).where(
                     Cliente.dia_reparto == dia_enum_manana,
                     Cliente.activo.is_(True),
+                    Cliente.opt_out_whatsapp.is_(False),
                 )
             )
             clientes = list(result.scalars().all())

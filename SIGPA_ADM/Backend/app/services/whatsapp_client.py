@@ -3,6 +3,7 @@ import logging
 import httpx
 
 from app.core.config import settings
+from app.services.mensaje_whatsapp_service import registrar_mensaje
 
 logger = logging.getLogger(__name__)
 
@@ -35,7 +36,24 @@ async def send_whatsapp_message(to: str, message: str) -> dict | None:
         response_body,
     )
 
-    if response.status_code != 200:
+    exitoso = response.status_code == 200
+
+    meta_message_id = None
+    if exitoso and isinstance(response_body, dict):
+        mensajes_respuesta = response_body.get("messages") or []
+        if mensajes_respuesta:
+            meta_message_id = mensajes_respuesta[0].get("id")
+
+    await registrar_mensaje(
+        telefono=to,
+        direccion="saliente",
+        tipo="text",
+        contenido=message,
+        meta_message_id=meta_message_id,
+        estado="enviado" if exitoso else "fallido",
+    )
+
+    if not exitoso:
         return None
 
     return response_body

@@ -14,6 +14,7 @@ class ClienteOut(BaseModel):
     tipo_cliente_id: int | None = None
     dia_reparto: DiaSemana | None = None
     activo: bool
+    opt_out_whatsapp: bool
     latitud: float | None = None
     longitud: float | None = None
 
@@ -38,5 +39,6 @@ class ClienteUpdate(BaseModel):
     tipo_cliente_id: int | None = None
     dia_reparto: DiaSemana | None = None
     activo: bool | None = None
+    opt_out_whatsapp: bool | None = None
     latitud: float | None = None
     longitud: float | None = None

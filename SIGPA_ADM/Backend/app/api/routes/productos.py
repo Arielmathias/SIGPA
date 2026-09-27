@@ -6,8 +6,9 @@ from app.core.database import SessionLocal
 from app.core.security import get_current_user
 from app.models.producto import Producto
 from app.schemas.producto import ProductoCreate, ProductoOut, ProductoUpdate
+from app.services.auditoria_service import construir_snapshot, registrar_auditoria
 
-router = APIRouter(tags=["productos"], dependencies=[Depends(get_current_user)])
+router = APIRouter(tags=["productos"])
 
 
 @router.get("", response_model=list[ProductoOut])
@@ -18,7 +19,7 @@ async def listar_productos():
 
 
 @router.post("", response_model=ProductoOut, status_code=status.HTTP_201_CREATED)
-async def crear_producto(datos: ProductoCreate):
+async def crear_producto(datos: ProductoCreate, current_user: dict = Depends(get_current_user)):
     async with SessionLocal() as session:
         producto = Producto(**datos.model_dump())
         session.add(producto)
@@ -31,6 +32,16 @@ async def crear_producto(datos: ProductoCreate):
                 detail="Ya existe un producto con ese nombre",
             )
         await session.refresh(producto)
+
+        await registrar_auditoria(
+            usuario=current_user.get("email"),
+            entidad="producto",
+            entidad_id=producto.id,
+            accion="crear",
+            antes=None,
+            despues=construir_snapshot(producto),
+        )
+
         return producto
 
 
@@ -44,15 +55,29 @@ async def obtener_producto(id: int):
 
 
 @router.patch("/{id}", response_model=ProductoOut)
-async def actualizar_producto(id: int, datos: ProductoUpdate):
+async def actualizar_producto(
+    id: int, datos: ProductoUpdate, current_user: dict = Depends(get_current_user)
+):
     async with SessionLocal() as session:
         producto = await session.get(Producto, id)
         if producto is None:
             raise HTTPException(status_code=404, detail="Producto no encontrado")
+
+        snapshot_antes = construir_snapshot(producto)
 
         for campo, valor in datos.model_dump(exclude_unset=True).items():
             setattr(producto, campo, valor)
 
         await session.commit()
         await session.refresh(producto)
+
+        await registrar_auditoria(
+            usuario=current_user.get("email"),
+            entidad="producto",
+            entidad_id=producto.id,
+            accion="actualizar",
+            antes=snapshot_antes,
+            despues=construir_snapshot(producto),
+        )
+
         return producto

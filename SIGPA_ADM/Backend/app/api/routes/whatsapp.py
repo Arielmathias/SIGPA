@@ -9,6 +9,7 @@ from app.core.config import (
     settings,
 )
 from app.services.conversacion_bot_service import esta_activa
+from app.services.mensaje_whatsapp_service import registrar_mensaje
 from app.services.order_flow import procesar_mensaje
 from app.services.whatsapp_client import send_whatsapp_message
 
@@ -66,6 +67,14 @@ async def receive_webhook(request: Request):
         message_text = message.get("text", {}).get("body")
         print(f"[WhatsApp] From: {phone_number} - Message: {message_text}")
 
+        await registrar_mensaje(
+            telefono=phone_number,
+            direccion="entrante",
+            tipo="text",
+            contenido=message_text,
+            estado="recibido",
+        )
+
         if not await esta_activa(phone_number):
             await _enrutar_a_ejecutiva(phone_number)
             return {"status": "received"}
@@ -90,6 +99,14 @@ async def receive_webhook(request: Request):
         latitude = location.get("latitude")
         longitude = location.get("longitude")
         print(f"[WhatsApp] Location from {phone_number}: lat={latitude}, lon={longitude}")
+
+        await registrar_mensaje(
+            telefono=phone_number,
+            direccion="entrante",
+            tipo="location",
+            contenido=f"lat={latitude}, lon={longitude}",
+            estado="recibido",
+        )
 
         if not await esta_activa(phone_number):
             await _enrutar_a_ejecutiva(phone_number)

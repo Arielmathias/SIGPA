@@ -23,6 +23,7 @@ from app.schemas.pedido import (
     PedidoUpdate,
     RegistrarEntregaRequest,
 )
+from app.services.auditoria_service import construir_snapshot, registrar_auditoria
 
 router = APIRouter(tags=["pedidos"], dependencies=[Depends(get_current_user)])
 
@@ -157,7 +158,7 @@ async def obtener_pedido(id: int):
 
 
 @router.post("", response_model=PedidoDetalleOut, status_code=status.HTTP_201_CREATED)
-async def crear_pedido(datos: PedidoCreate):
+async def crear_pedido(datos: PedidoCreate, current_user: dict = Depends(get_current_user)):
     async with SessionLocal() as session:
         cliente = await session.get(Cliente, datos.cliente_id)
         if cliente is None:
@@ -219,11 +220,22 @@ async def crear_pedido(datos: PedidoCreate):
         )
         pedido_completo = result.scalar_one()
 
+        await registrar_auditoria(
+            usuario=current_user.get("email"),
+            entidad="pedido",
+            entidad_id=pedido_completo.id,
+            accion="crear",
+            antes=None,
+            despues=construir_snapshot(pedido_completo),
+        )
+
         return _pedido_a_detalle_out(pedido_completo)
 
 
 @router.patch("/{id}", response_model=PedidoOut)
-async def actualizar_pedido(id: int, datos: PedidoUpdate):
+async def actualizar_pedido(
+    id: int, datos: PedidoUpdate, current_user: dict = Depends(get_current_user)
+):
     async with SessionLocal() as session:
         result = await session.execute(
             select(Pedido).where(Pedido.id == id)
@@ -234,12 +246,23 @@ async def actualizar_pedido(id: int, datos: PedidoUpdate):
         if pedido is None:
             raise HTTPException(status_code=404, detail="Pedido no encontrado")
 
+        snapshot_antes = construir_snapshot(pedido)
+
         for campo, valor in datos.model_dump(exclude_unset=True).items():
             setattr(pedido, campo, valor)
 
         pedido.actualizado_en = datetime.utcnow()
 
         await session.commit()
+
+        await registrar_auditoria(
+            usuario=current_user.get("email"),
+            entidad="pedido",
+            entidad_id=pedido.id,
+            accion="actualizar",
+            antes=snapshot_antes,
+            despues=construir_snapshot(pedido),
+        )
 
         return _pedido_a_out(pedido)
 

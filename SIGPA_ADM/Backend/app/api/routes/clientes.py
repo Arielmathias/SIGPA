@@ -5,6 +5,7 @@ from app.core.database import SessionLocal
 from app.core.security import get_current_user
 from app.models.cliente import Cliente
 from app.schemas.cliente import ClienteCreate, ClienteOut, ClienteUpdate
+from app.services.auditoria_service import construir_snapshot, registrar_auditoria
 
 router = APIRouter(tags=["clientes"], dependencies=[Depends(get_current_user)])
 
@@ -17,7 +18,7 @@ async def listar_clientes():
 
 
 @router.post("", response_model=ClienteOut, status_code=status.HTTP_201_CREATED)
-async def crear_cliente(datos: ClienteCreate):
+async def crear_cliente(datos: ClienteCreate, current_user: dict = Depends(get_current_user)):
     async with SessionLocal() as session:
         result = await session.execute(
             select(Cliente).where(Cliente.telefono == datos.telefono)
@@ -32,6 +33,16 @@ async def crear_cliente(datos: ClienteCreate):
         session.add(cliente)
         await session.commit()
         await session.refresh(cliente)
+
+        await registrar_auditoria(
+            usuario=current_user.get("email"),
+            entidad="cliente",
+            entidad_id=cliente.id,
+            accion="crear",
+            antes=None,
+            despues=construir_snapshot(cliente),
+        )
+
         return cliente
 
 
@@ -45,15 +56,29 @@ async def obtener_cliente(id: int):
 
 
 @router.patch("/{id}", response_model=ClienteOut)
-async def actualizar_cliente(id: int, datos: ClienteUpdate):
+async def actualizar_cliente(
+    id: int, datos: ClienteUpdate, current_user: dict = Depends(get_current_user)
+):
     async with SessionLocal() as session:
         cliente = await session.get(Cliente, id)
         if cliente is None:
             raise HTTPException(status_code=404, detail="Cliente no encontrado")
+
+        snapshot_antes = construir_snapshot(cliente)
 
         for campo, valor in datos.model_dump(exclude_unset=True).items():
             setattr(cliente, campo, valor)
 
         await session.commit()
         await session.refresh(cliente)
+
+        await registrar_auditoria(
+            usuario=current_user.get("email"),
+            entidad="cliente",
+            entidad_id=cliente.id,
+            accion="actualizar",
+            antes=snapshot_antes,
+            despues=construir_snapshot(cliente),
+        )
+
         return cliente

@@ -2,13 +2,27 @@
 que el agente solo procesa conversaciones que él mismo inició (ver
 marcar_activa/marcar_inactiva y su uso en whatsapp.py y order_flow.py)."""
 
-from datetime import datetime
+from datetime import datetime, time, timedelta
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from app.core.database import SessionLocal
 from app.models.conversacion_bot import ConversacionBot
+
+ZONA_HORARIA_CHILE = ZoneInfo("America/Santiago")
+
+# Una conversación activa expira automáticamente a las 07:00 hora Chile del
+# día siguiente a iniciada_en (ver esta_activa), para no dejarla abierta
+# indefinidamente si el cliente nunca la cierra confirmando un pedido.
+HORA_CORTE_CONVERSACION = 7
+
+
+def _a_hora_chile(fecha: datetime) -> datetime:
+    if fecha.tzinfo is None:
+        fecha = fecha.replace(tzinfo=ZoneInfo("UTC"))
+    return fecha.astimezone(ZONA_HORARIA_CHILE)
 
 
 async def marcar_activa(phone: str) -> None:
@@ -52,7 +66,27 @@ async def marcar_inactiva(phone: str) -> None:
 async def esta_activa(phone: str) -> bool:
     async with SessionLocal() as session:
         result = await session.execute(
-            select(ConversacionBot.activa).where(ConversacionBot.telefono == phone)
+            select(ConversacionBot).where(ConversacionBot.telefono == phone)
         )
-        activa = result.scalar_one_or_none()
-    return bool(activa)
+        conversacion = result.scalar_one_or_none()
+
+    if conversacion is None or not conversacion.activa:
+        return False
+
+    if conversacion.iniciada_en is None:
+        # No debería ocurrir (marcar_activa siempre setea iniciada_en), pero
+        # sin ese dato no hay corte que calcular: se mantiene activa.
+        return True
+
+    iniciada_en_chile = _a_hora_chile(conversacion.iniciada_en)
+    corte = datetime.combine(
+        iniciada_en_chile.date() + timedelta(days=1),
+        time(hour=HORA_CORTE_CONVERSACION),
+        tzinfo=ZONA_HORARIA_CHILE,
+    )
+
+    if datetime.now(ZONA_HORARIA_CHILE) >= corte:
+        await marcar_inactiva(phone)
+        return False
+
+    return True
