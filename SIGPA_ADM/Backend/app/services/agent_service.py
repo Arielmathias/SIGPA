@@ -345,7 +345,7 @@ async def _construir_respuesta_pedidos(phone: str) -> str:
     bloques = []
     for pedido in pedidos:
         lineas_producto = "\n".join(
-            f"- {detalle.cantidad}x {detalle.producto.nombre}" for detalle in pedido.detalles
+            f"- {detalle.cantidad_solicitada}x {detalle.producto.nombre}" for detalle in pedido.detalles
         )
         fecha = _formatear_fecha_chile(pedido.creado_en)
         bloques.append(

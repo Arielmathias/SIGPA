@@ -24,7 +24,20 @@ class Settings(BaseSettings):
     SUPABASE_URL: str = ""
     SUPABASE_ANON_KEY: str = ""
 
+    EJECUTIVA_PHONE: str = "56957721243"
+
+    INTERNAL_CRON_SECRET: str = ""
+
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
 
 
 settings = Settings()
+
+MENSAJE_SALUDO_ESPONTANEO = (
+    "¡Hola! Gracias por escribirnos. Una ejecutiva revisará tu mensaje y te contactará a la brevedad."
+)
+
+MENSAJE_NOTIFICACION_EJECUTIVA = (
+    "Hola, un cliente ({telefono}) escribió al WhatsApp de pedidos. "
+    "Por favor revisa y continúa la conversación."
+)

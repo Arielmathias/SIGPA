@@ -3,7 +3,12 @@ import logging
 from fastapi import APIRouter, Query, Request
 from fastapi.responses import PlainTextResponse
 
-from app.core.config import settings
+from app.core.config import (
+    MENSAJE_NOTIFICACION_EJECUTIVA,
+    MENSAJE_SALUDO_ESPONTANEO,
+    settings,
+)
+from app.services.conversacion_bot_service import esta_activa
 from app.services.order_flow import procesar_mensaje
 from app.services.whatsapp_client import send_whatsapp_message
 
@@ -16,6 +21,22 @@ MENSAJE_ERROR_GENERICO = (
 )
 
 MENSAJE_TIPO_NO_SOPORTADO = "Por ahora solo puedo procesar mensajes de texto o de ubicación."
+
+
+async def _enrutar_a_ejecutiva(phone_number: str) -> None:
+    """Restricción "el agente solo procesa conversaciones que él inicia":
+    cuando no hay conversación activa (esta_activa == False), en vez de
+    procesar el mensaje con el bot se saluda al cliente y se avisa a la
+    ejecutiva para que continúe manualmente."""
+    logger.info(
+        "[WhatsApp] Mensaje de %s enrutado a la ejecutiva: no hay conversación activa del bot",
+        phone_number,
+    )
+    await send_whatsapp_message(to=phone_number, message=MENSAJE_SALUDO_ESPONTANEO)
+    await send_whatsapp_message(
+        to=settings.EJECUTIVA_PHONE,
+        message=MENSAJE_NOTIFICACION_EJECUTIVA.format(telefono=phone_number),
+    )
 
 
 @router.get("/webhook")
@@ -45,6 +66,10 @@ async def receive_webhook(request: Request):
         message_text = message.get("text", {}).get("body")
         print(f"[WhatsApp] From: {phone_number} - Message: {message_text}")
 
+        if not await esta_activa(phone_number):
+            await _enrutar_a_ejecutiva(phone_number)
+            return {"status": "received"}
+
         try:
             respuesta = await procesar_mensaje(
                 phone=phone_number,
@@ -65,6 +90,10 @@ async def receive_webhook(request: Request):
         latitude = location.get("latitude")
         longitude = location.get("longitude")
         print(f"[WhatsApp] Location from {phone_number}: lat={latitude}, lon={longitude}")
+
+        if not await esta_activa(phone_number):
+            await _enrutar_a_ejecutiva(phone_number)
+            return {"status": "received"}
 
         try:
             respuesta = await procesar_mensaje(

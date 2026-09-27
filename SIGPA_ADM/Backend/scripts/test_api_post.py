@@ -116,14 +116,14 @@ def main():
     if cliente_id is not None:
         separador(
             f"POST /pedidos exitoso - cliente_id={cliente_id}, "
-            'lineas=[{"producto_id": 1, "cantidad": 2}]'
+            'lineas=[{"producto_id": 1, "cantidad_solicitada": 2}]'
         )
         response = httpx.post(
             f"{API_BASE_URL}/pedidos",
             headers=headers,
             json={
                 "cliente_id": cliente_id,
-                "lineas": [{"producto_id": 1, "cantidad": 2}],
+                "lineas": [{"producto_id": 1, "cantidad_solicitada": 2}],
             },
             timeout=30.0,
         )
@@ -144,14 +144,14 @@ def main():
 
     separador(
         "POST /pedidos con producto_id inexistente - "
-        'lineas=[{"producto_id": 9999, "cantidad": 1}] (se espera 404)'
+        'lineas=[{"producto_id": 9999, "cantidad_solicitada": 1}] (se espera 404)'
     )
     response = httpx.post(
         f"{API_BASE_URL}/pedidos",
         headers=headers,
         json={
             "cliente_id": cliente_id if cliente_id is not None else 1,
-            "lineas": [{"producto_id": 9999, "cantidad": 1}],
+            "lineas": [{"producto_id": 9999, "cantidad_solicitada": 1}],
         },
         timeout=30.0,
     )

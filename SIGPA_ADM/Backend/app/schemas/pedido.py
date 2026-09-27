@@ -26,7 +26,8 @@ class PedidoOut(BaseModel):
 class DetallePedidoLineaOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
-    cantidad: int
+    cantidad_solicitada: int
+    cantidad_entregada: int | None = None
     precio_unitario: float
     producto_nombre: str
 
@@ -44,7 +45,7 @@ class PedidoUpdate(BaseModel):
 
 class LineaPedidoCreate(BaseModel):
     producto_id: int
-    cantidad: int = Field(gt=0)
+    cantidad_solicitada: int = Field(gt=0)
 
 
 class PedidoCreate(BaseModel):
@@ -54,3 +55,12 @@ class PedidoCreate(BaseModel):
     longitud: float | None = None
     estado: EstadoPedido = EstadoPedido.PENDIENTE
     lineas: list[LineaPedidoCreate] = Field(min_length=1)
+
+
+class LineaEntregaRequest(BaseModel):
+    detalle_id: int
+    cantidad_entregada: int = Field(ge=0)
+
+
+class RegistrarEntregaRequest(BaseModel):
+    lineas: list[LineaEntregaRequest] = Field(min_length=1)

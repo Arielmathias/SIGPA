@@ -14,6 +14,7 @@ from app.core.database import SessionLocal
 from app.models import Cliente, DetallePedido, Pedido, Producto
 from app.models.enums import EstadoPedido
 from app.services.agent_service import construir_resumen_pedido, interpret_message
+from app.services.conversacion_bot_service import marcar_inactiva
 from app.services.draft_store import clear_draft, get_draft, get_lock, save_draft
 
 logger = logging.getLogger(__name__)
@@ -330,7 +331,7 @@ async def _confirmar_pedido(phone: str, draft: dict | None) -> str:
                     DetallePedido(
                         pedido_id=pedido.id,
                         producto_id=producto.id,
-                        cantidad=linea["cantidad"],
+                        cantidad_solicitada=linea["cantidad"],
                         precio_unitario=linea["precio_unitario"],
                     )
                 )
@@ -342,6 +343,7 @@ async def _confirmar_pedido(phone: str, draft: dict | None) -> str:
             return MENSAJE_ERROR_PEDIDO
 
     clear_draft(phone)
+    await marcar_inactiva(phone)
     return (
         f"¡Pedido #{pedido.id} confirmado! Quedó pendiente de revisión, "
         "te contactaremos para coordinar la entrega."

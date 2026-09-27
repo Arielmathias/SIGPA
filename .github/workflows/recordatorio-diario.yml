@@ -1,0 +1,18 @@
+name: Recordatorio diario SIGPA
+
+on:
+  schedule:
+    - cron: '30,45 17 * * *'
+    - cron: '0,15,30,45 18 * * *'
+    - cron: '0,15 19 * * *'
+  workflow_dispatch: {}
+
+jobs:
+  llamar-recordatorio:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Llamar endpoint de recordatorio
+        run: |
+          curl -X POST https://sigpa-34sy.onrender.com/internal/recordatorio-diario \
+            -H "X-Cron-Secret: ${{ secrets.INTERNAL_CRON_SECRET }}" \
+            -f

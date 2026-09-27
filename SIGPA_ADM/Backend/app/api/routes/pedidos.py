@@ -21,6 +21,7 @@ from app.schemas.pedido import (
     PedidoDetalleOut,
     PedidoOut,
     PedidoUpdate,
+    RegistrarEntregaRequest,
 )
 
 router = APIRouter(tags=["pedidos"], dependencies=[Depends(get_current_user)])
@@ -51,7 +52,8 @@ def _pedido_a_out(pedido: Pedido) -> PedidoOut:
 def _pedido_a_detalle_out(pedido: Pedido) -> PedidoDetalleOut:
     lineas = [
         DetallePedidoLineaOut(
-            cantidad=detalle.cantidad,
+            cantidad_solicitada=detalle.cantidad_solicitada,
+            cantidad_entregada=detalle.cantidad_entregada,
             precio_unitario=detalle.precio_unitario,
             producto_nombre=detalle.producto.nombre,
         )
@@ -178,11 +180,11 @@ async def crear_pedido(datos: PedidoCreate):
         total = 0.0
         for linea in datos.lineas:
             precio_unitario = float(productos_por_id[linea.producto_id].precio_unitario)
-            total += linea.cantidad * precio_unitario
+            total += linea.cantidad_solicitada * precio_unitario
             detalles.append(
                 DetallePedido(
                     producto_id=linea.producto_id,
-                    cantidad=linea.cantidad,
+                    cantidad_solicitada=linea.cantidad_solicitada,
                     precio_unitario=precio_unitario,
                 )
             )
@@ -240,5 +242,64 @@ async def actualizar_pedido(id: int, datos: PedidoUpdate):
         await session.commit()
 
         return _pedido_a_out(pedido)
+
+
+@router.post("/{id}/entrega", response_model=PedidoDetalleOut)
+async def registrar_entrega(id: int, datos: RegistrarEntregaRequest):
+    async with SessionLocal() as session:
+        result = await session.execute(
+            select(Pedido)
+            .where(Pedido.id == id)
+            .options(
+                selectinload(Pedido.cliente).selectinload(Cliente.sector).selectinload(Sector.comuna),
+                selectinload(Pedido.detalles).selectinload(DetallePedido.producto),
+            )
+        )
+        pedido = result.scalar_one_or_none()
+
+        if pedido is None:
+            raise HTTPException(status_code=404, detail="Pedido no encontrado")
+
+        detalles_por_id = {detalle.id: detalle for detalle in pedido.detalles}
+
+        faltantes = [
+            linea.detalle_id for linea in datos.lineas if linea.detalle_id not in detalles_por_id
+        ]
+        if faltantes:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Detalle(s) de pedido no encontrado(s) en este pedido: {faltantes}",
+            )
+
+        for linea in datos.lineas:
+            detalles_por_id[linea.detalle_id].cantidad_entregada = linea.cantidad_entregada
+
+        pedido.total = sum(
+            (detalle.cantidad_entregada or 0) * float(detalle.precio_unitario)
+            for detalle in pedido.detalles
+        )
+        pedido.estado = EstadoPedido.ENTREGADO
+        pedido.actualizado_en = datetime.utcnow()
+
+        try:
+            await session.commit()
+        except IntegrityError:
+            await session.rollback()
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="No se pudo registrar la entrega por un conflicto de datos",
+            )
+
+        result = await session.execute(
+            select(Pedido)
+            .where(Pedido.id == pedido.id)
+            .options(
+                selectinload(Pedido.cliente).selectinload(Cliente.sector).selectinload(Sector.comuna),
+                selectinload(Pedido.detalles).selectinload(DetallePedido.producto),
+            )
+        )
+        pedido_actualizado = result.scalar_one()
+
+        return _pedido_a_detalle_out(pedido_actualizado)
 
 

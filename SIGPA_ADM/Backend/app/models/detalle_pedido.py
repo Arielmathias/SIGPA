@@ -14,7 +14,10 @@ class DetallePedido(Base):
         ForeignKey("pedido.id", ondelete="CASCADE"), nullable=False
     )
     producto_id: Mapped[int] = mapped_column(ForeignKey("producto.id"), nullable=False)
-    cantidad: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    cantidad_solicitada: Mapped[int] = mapped_column(
+        "cantidad_solicitada", Integer, nullable=False, default=1
+    )
+    cantidad_entregada: Mapped[int | None] = mapped_column(Integer, nullable=True)
     precio_unitario: Mapped[float] = mapped_column(Numeric(10, 2), nullable=False)
 
     pedido: Mapped["Pedido"] = relationship("Pedido", back_populates="detalles")
