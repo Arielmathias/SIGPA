@@ -13,6 +13,7 @@ class ClienteOut(BaseModel):
     direccion: str | None = None
     sector_id: int | None = None
     tipo_cliente_id: int | None = None
+    tipo_cliente_nombre: str | None = None
     dia_reparto: DiaSemana | None = None
     activo: bool
     opt_out_whatsapp: bool
