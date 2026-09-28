@@ -10,6 +10,21 @@ from app.services.auditoria_service import construir_snapshot, registrar_auditor
 
 router = APIRouter(tags=["clientes"], dependencies=[Depends(get_current_user)])
 
+def _cliente_a_out(cliente: Cliente) -> ClienteOut:
+    return ClienteOut(
+        id=cliente.id,
+        nombre=cliente.nombre,
+        telefono=cliente.telefono,
+        direccion=cliente.direccion,
+        sector_id=cliente.sector_id,
+        tipo_cliente_id=cliente.tipo_cliente_id,
+        tipo_cliente_nombre=cliente.tipo_cliente.nombre if cliente.tipo_cliente else None,
+        dia_reparto=cliente.dia_reparto,
+        activo=cliente.activo,
+        opt_out_whatsapp=cliente.opt_out_whatsapp,
+        latitud=cliente.latitud,
+        longitud=cliente.longitud,
+    )
 
 @router.get("", response_model=list[ClienteOut])
 async def listar_clientes(
@@ -17,7 +32,7 @@ async def listar_clientes(
     telefono: str | None = Query(None),
 ):
     async with SessionLocal() as session:
-        query = select(Cliente)
+        query = select(Cliente).options(selectinload(Cliente.tipo_cliente))
 
         if nombre is not None:
             query = query.where(Cliente.nombre.ilike(f"%{nombre}%"))
@@ -25,7 +40,7 @@ async def listar_clientes(
             query = query.where(Cliente.telefono.ilike(f"%{telefono}%"))
 
         result = await session.execute(query)
-        return result.scalars().all()
+        return [_cliente_a_out(cliente) for cliente in result.scalars().all()]
 
 
 @router.post("", response_model=ClienteOut, status_code=status.HTTP_201_CREATED)
@@ -54,7 +69,14 @@ async def crear_cliente(datos: ClienteCreate, current_user: dict = Depends(get_c
             despues=construir_snapshot(cliente),
         )
 
-        return cliente
+        result = await session.execute(
+            select(Cliente)
+            .where(Cliente.id == cliente.id)
+            .options(selectinload(Cliente.tipo_cliente))
+        )
+        cliente_completo = result.scalar_one()
+
+        return _cliente_a_out(cliente_completo)
 
 
 @router.get("/{id}", response_model=ClienteDetalleOut)
@@ -63,7 +85,10 @@ async def obtener_cliente(id: int):
         result = await session.execute(
             select(Cliente)
             .where(Cliente.id == id)
-            .options(selectinload(Cliente.pedidos))
+            .options(
+                selectinload(Cliente.pedidos),
+                selectinload(Cliente.tipo_cliente),
+            )
         )
         cliente = result.scalar_one_or_none()
         if cliente is None:
@@ -71,7 +96,10 @@ async def obtener_cliente(id: int):
 
         cliente.pedidos.sort(key=lambda pedido: pedido.creado_en, reverse=True)
 
-        return cliente
+        return ClienteDetalleOut(
+            **_cliente_a_out(cliente).model_dump(),
+            pedidos=cliente.pedidos,
+        )
 
 
 @router.patch("/{id}", response_model=ClienteOut)
@@ -100,4 +128,11 @@ async def actualizar_cliente(
             despues=construir_snapshot(cliente),
         )
 
-        return cliente
+        result = await session.execute(
+            select(Cliente)
+            .where(Cliente.id == cliente.id)
+            .options(selectinload(Cliente.tipo_cliente))
+        )
+        cliente_completo = result.scalar_one()
+
+        return _cliente_a_out(cliente_completo)
