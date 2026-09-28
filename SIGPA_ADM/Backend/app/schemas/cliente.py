@@ -1,7 +1,8 @@
+from datetime import datetime
+
 from pydantic import BaseModel, ConfigDict
 
-from app.models.enums import DiaSemana
-
+from app.models.enums import DiaSemana, EstadoPedido
 
 class ClienteOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
@@ -18,6 +19,17 @@ class ClienteOut(BaseModel):
     latitud: float | None = None
     longitud: float | None = None
 
+class PedidoHistorialOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    estado: EstadoPedido
+    total: float
+    creado_en: datetime
+
+
+class ClienteDetalleOut(ClienteOut):
+    pedidos: list[PedidoHistorialOut]
 
 class ClienteCreate(BaseModel):
     nombre: str

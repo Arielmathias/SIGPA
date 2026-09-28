@@ -1,19 +1,30 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import select
+from sqlalchemy.orm import selectinload
 
 from app.core.database import SessionLocal
 from app.core.security import get_current_user
 from app.models.cliente import Cliente
-from app.schemas.cliente import ClienteCreate, ClienteOut, ClienteUpdate
+from app.schemas.cliente import ClienteCreate, ClienteDetalleOut, ClienteOut, ClienteUpdate
 from app.services.auditoria_service import construir_snapshot, registrar_auditoria
 
 router = APIRouter(tags=["clientes"], dependencies=[Depends(get_current_user)])
 
 
 @router.get("", response_model=list[ClienteOut])
-async def listar_clientes():
+async def listar_clientes(
+    nombre: str | None = Query(None),
+    telefono: str | None = Query(None),
+):
     async with SessionLocal() as session:
-        result = await session.execute(select(Cliente))
+        query = select(Cliente)
+
+        if nombre is not None:
+            query = query.where(Cliente.nombre.ilike(f"%{nombre}%"))
+        if telefono is not None:
+            query = query.where(Cliente.telefono.ilike(f"%{telefono}%"))
+
+        result = await session.execute(query)
         return result.scalars().all()
 
 
@@ -46,12 +57,20 @@ async def crear_cliente(datos: ClienteCreate, current_user: dict = Depends(get_c
         return cliente
 
 
-@router.get("/{id}", response_model=ClienteOut)
+@router.get("/{id}", response_model=ClienteDetalleOut)
 async def obtener_cliente(id: int):
     async with SessionLocal() as session:
-        cliente = await session.get(Cliente, id)
+        result = await session.execute(
+            select(Cliente)
+            .where(Cliente.id == id)
+            .options(selectinload(Cliente.pedidos))
+        )
+        cliente = result.scalar_one_or_none()
         if cliente is None:
             raise HTTPException(status_code=404, detail="Cliente no encontrado")
+
+        cliente.pedidos.sort(key=lambda pedido: pedido.creado_en, reverse=True)
+
         return cliente
 
 
