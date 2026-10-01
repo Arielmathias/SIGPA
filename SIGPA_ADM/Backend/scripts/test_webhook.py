@@ -10,7 +10,7 @@ from app.core.config import settings
 WEBHOOK_URL = "https://sigpa-34sy.onrender.com/webhook"
 
 SENDER_PHONE_NUMBER = "56957721243"
-MESSAGE_TEXT = "Hola, esto es una prueba"
+MESSAGE_TEXT = "no puedo compartirla, te sirve mi direccion? "
 
 
 def build_payload() -> dict:

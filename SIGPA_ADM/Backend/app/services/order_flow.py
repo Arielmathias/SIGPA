@@ -75,6 +75,30 @@ MENSAJE_ERROR_PEDIDO = (
     "Hubo un problema al registrar tu pedido, por favor intenta de nuevo o contacta a un ejecutivo."
 )
 
+MENSAJE_PEDIDO_CANCELADO = (
+    "Listo, cancelé tu pedido en curso. Si quieres hacer un pedido nuevo, cuéntame qué necesitas."
+)
+
+# Palabras que indican una cancelación EXPLÍCITA del pedido en curso. Es la
+# única forma de vaciar un draft con productos ya confirmados (ver salvaguarda
+# de "pedido no se anula por una interjección ambigua" en
+# _aplicar_resultado_llm): un simple saludo o mensaje ambiguo nunca debe
+# borrar el pedido, pero esto sí.
+_PALABRAS_CANCELACION = ("cancela", "cancelar", "anula", "anular")
+
+
+def _es_cancelacion_explicita(texto: str | None) -> bool:
+    if not texto:
+        return False
+    texto_normalizado = texto.strip().lower()
+    return any(palabra in texto_normalizado for palabra in _PALABRAS_CANCELACION)
+
+
+def _resumen_productos_corto(productos: list[dict]) -> str:
+    return ", ".join(
+        f"{item.get('cantidad', 1)}x {item.get('nombre_producto', '')}" for item in productos
+    )
+
 
 def _contexto_desde_draft(draft: dict | None) -> dict | None:
     if draft is None:
@@ -87,13 +111,17 @@ def _contexto_desde_draft(draft: dict | None) -> dict | None:
         "direccion_texto": draft.get("direccion_texto"),
         "notas": draft.get("notas"),
         "ubicacion_recibida": draft.get("ubicacion") is not None,
+        "ubicacion_rechazada": bool(draft.get("ubicacion_rechazada")),
         "nombre_cliente": draft.get("nombre_cliente"),
         "algo_mas_preguntado": bool(draft.get("algo_mas_preguntado")),
     }
 
 
 def _pedido_listo_salvo_algo_mas(
-    resultado: dict, es_cliente_nuevo: bool, ubicacion_recibida: bool
+    resultado: dict,
+    es_cliente_nuevo: bool,
+    ubicacion_recibida: bool,
+    ubicacion_rechazada: bool = False,
 ) -> bool:
     """True si productos/dirección/nombre ya están resueltos y lo único que
     falta para pedido_completo es el paso "¿algo más?" (ver SYSTEM_PROMPT).
@@ -102,15 +130,12 @@ def _pedido_listo_salvo_algo_mas(
     productos = resultado.get("productos") or []
     if not productos or resultado.get("aclaracion_pendiente"):
         return False
-    if es_cliente_nuevo:
-        return (
-            bool(resultado.get("nombre_cliente"))
-            and resultado.get("direccion_texto") is not None
-            and ubicacion_recibida
-        )
-    return bool(resultado.get("usa_direccion_habitual")) or (
-        resultado.get("direccion_texto") is not None and ubicacion_recibida
+    direccion_distinta_resuelta = resultado.get("direccion_texto") is not None and (
+        ubicacion_recibida or ubicacion_rechazada
     )
+    if es_cliente_nuevo:
+        return bool(resultado.get("nombre_cliente")) and direccion_distinta_resuelta
+    return bool(resultado.get("usa_direccion_habitual")) or direccion_distinta_resuelta
 
 
 def _ubicacion_ya_recibida(draft_previo: dict) -> bool:
@@ -219,7 +244,58 @@ async def _aplicar_resultado_llm(
         )
         resultado = {**resultado, "esperando_ubicacion": False}
 
+    # Salvaguarda CENTRALIZADA de rechazo de ubicación, igual de independiente
+    # que la de arriba: si el cliente ya rechazó explícitamente compartir su
+    # ubicación en un turno anterior (draft_previo.ubicacion_rechazada ==
+    # True), el LLM nunca debe volver a pedirla en este turno — la dirección
+    # en texto ya es suficiente, sin importar que falten coordenadas.
+    if draft_previo.get("ubicacion_rechazada") and resultado.get("esperando_ubicacion"):
+        respuesta_a_sanear = respuesta_a_sanear or _menciona_direccion_o_ubicacion(
+            resultado.get("respuesta_sugerida")
+        )
+        resultado = {**resultado, "esperando_ubicacion": False}
+
+    # Salvaguarda CENTRALIZADA de "un pedido en curso no se anula por una
+    # interjección ambigua": el SYSTEM_PROMPT instruye vaciar "productos"
+    # cuando la intención no es "pedido" (saludos, "¿sigues ahí?", etc.), pero
+    # eso no debe borrar un pedido real que ya estaba en el draft. La única
+    # forma de vaciar un draft con productos es una cancelación EXPLÍCITA, que
+    # se intercepta antes de llegar aquí (ver _es_cancelacion_explicita en
+    # procesar_mensaje) y nunca pasa por esta función.
+    productos_previos = draft_previo.get("productos") or []
+    if productos_previos and resultado.get("intencion") != "pedido" and not resultado.get("productos"):
+        resultado = {**resultado, "intencion": "pedido", "productos": productos_previos}
+
+    # Salvaguarda CENTRALIZADA de "retomar el pedido mientras se espera
+    # ubicación": si ya estábamos esperando que el cliente comparta su
+    # ubicación (o rechace hacerlo) y este turno de texto no trae ninguna de
+    # las dos cosas (ni un rechazo, ni una dirección nueva), no dejamos que el
+    # LLM abandone "esperando_ubicacion" por una interjección ambigua: se
+    # fuerza a seguir esperando y se redacta una respuesta que retoma
+    # explícitamente el pedido en curso.
+    if (
+        draft_previo.get("estado") == "esperando_ubicacion"
+        and productos_previos
+        and not resultado.get("ubicacion_rechazada")
+        and resultado.get("direccion_texto") == draft_previo.get("direccion_texto")
+        and not resultado.get("esperando_ubicacion")
+    ):
+        resultado = {
+            **resultado,
+            "intencion": "pedido",
+            "productos": productos_previos,
+            "esperando_ubicacion": True,
+            "pedido_completo": False,
+            "respuesta_sugerida": (
+                f"Sigo con tu pedido de {_resumen_productos_corto(productos_previos)}. "
+                "¿Me compartes tu ubicación de WhatsApp o prefieres escribirme tu dirección?"
+            ),
+        }
+
     ubicacion_recibida = draft_previo.get("ubicacion") is not None
+    ubicacion_rechazada = bool(resultado.get("ubicacion_rechazada")) or bool(
+        draft_previo.get("ubicacion_rechazada")
+    )
 
     nuevo_draft = {
         "intencion": resultado.get("intencion"),
@@ -229,6 +305,7 @@ async def _aplicar_resultado_llm(
         "direccion_texto": resultado.get("direccion_texto"),
         "notas": resultado.get("notas"),
         "ubicacion": draft_previo.get("ubicacion"),
+        "ubicacion_rechazada": ubicacion_rechazada,
         "direccion_preguntada": direccion_preguntada,
         "nombre_cliente": resultado.get("nombre_cliente"),
     }
@@ -255,7 +332,9 @@ async def _aplicar_resultado_llm(
     # marcamos algo_mas_preguntado=true para que el backend le indique al
     # LLM, en el próximo turno, que el mensaje del cliente responde
     # únicamente a esa pregunta (ver SYSTEM_PROMPT en agent_service.py).
-    algo_mas_pendiente = _pedido_listo_salvo_algo_mas(resultado, es_cliente_nuevo, ubicacion_recibida)
+    algo_mas_pendiente = _pedido_listo_salvo_algo_mas(
+        resultado, es_cliente_nuevo, ubicacion_recibida, ubicacion_rechazada
+    )
     nuevo_draft["algo_mas_preguntado"] = algo_mas_pendiente
     nuevo_draft["estado"] = "armando"
     save_draft(phone, nuevo_draft)
@@ -372,6 +451,17 @@ async def procesar_mensaje(
         draft = get_draft(phone)
         estado = draft.get("estado") if draft else None
 
+        # Cancelación EXPLÍCITA del pedido en curso: se intercepta antes de
+        # llamar al LLM y antes de cualquier otra rama del flujo, para que
+        # funcione sin importar en qué estado esté el draft (armando,
+        # esperando_ubicacion, esperando_confirmacion). Es la única forma de
+        # vaciar un draft con productos (ver salvaguarda correspondiente en
+        # _aplicar_resultado_llm, que protege contra que un simple saludo o
+        # interjección ambigua lo haga por error).
+        if draft is not None and _es_cancelacion_explicita(message_text):
+            clear_draft(phone)
+            return MENSAJE_PEDIDO_CANCELADO
+
         if draft is not None and estado == "esperando_confirmacion":
             if draft.get("esperando_nombre"):
                 nombre_cliente = (message_text or "").strip()
@@ -408,6 +498,18 @@ async def procesar_mensaje(
                     "[El cliente compartió su ubicación de WhatsApp]",
                     es_cliente_nuevo,
                     _contexto_desde_draft(draft),
+                )
+                return await _aplicar_resultado_llm(phone, resultado, draft, es_cliente_nuevo)
+
+            if message_type == "text" and (message_text or "").strip():
+                # El cliente respondió con texto en vez de compartir su
+                # ubicación: puede ser un rechazo explícito ("no puedo
+                # compartirla, mejor te doy mi dirección") que el LLM debe
+                # interpretar (ver "ubicacion_rechazada" en el SYSTEM_PROMPT),
+                # así que igual se lo pasamos en vez de cortar directo con
+                # MENSAJE_PEDIR_UBICACION.
+                resultado = await _interpretar_con_debug(
+                    phone, message_text, es_cliente_nuevo, _contexto_desde_draft(draft)
                 )
                 return await _aplicar_resultado_llm(phone, resultado, draft, es_cliente_nuevo)
 
