@@ -292,6 +292,19 @@ async def _aplicar_resultado_llm(
             ),
         }
 
+    # Salvaguarda CENTRALIZADA (post-mortem del bug en producción del
+    # 2026-10-01, teléfono 56957721243): "esperando_ubicacion" solo tiene
+    # sentido si hay al menos un producto en el pedido — pedir dirección y
+    # ubicación de despacho para un pedido vacío es un estado "fantasma" que
+    # puede quedar atascado para siempre (el cliente nunca puede resolverlo
+    # porque no hay nada que despachar). Esto puede pasar si el draft en
+    # memoria se perdió por un reinicio del proceso (ver TEMPORAL en
+    # draft_store.py) y el LLM igual devuelve esperando_ubicacion=true sin
+    # productos resueltos: lo forzamos a False sin importar qué haya decidido
+    # el LLM o cualquier rama anterior.
+    if resultado.get("esperando_ubicacion") and not (resultado.get("productos") or []):
+        resultado = {**resultado, "esperando_ubicacion": False}
+
     ubicacion_recibida = draft_previo.get("ubicacion") is not None
     ubicacion_rechazada = bool(resultado.get("ubicacion_rechazada")) or bool(
         draft_previo.get("ubicacion_rechazada")
@@ -314,7 +327,28 @@ async def _aplicar_resultado_llm(
         nuevo_draft["algo_mas_preguntado"] = False
         nuevo_draft["estado"] = "esperando_ubicacion"
         save_draft(phone, nuevo_draft)
-        return resultado.get("respuesta_sugerida", MENSAJE_PEDIR_UBICACION)
+
+        respuesta_ubicacion = resultado.get("respuesta_sugerida")
+        if not respuesta_ubicacion:
+            # El LLM no trajo "respuesta_sugerida" (bug visto en producción:
+            # un JSON incompleto hacía caer aquí en el default MENSAJE_PEDIR_
+            # UBICACION de forma silenciosa, repitiendo el mismo texto fijo
+            # turno tras turno sin importar lo que respondiera el cliente,
+            # incluido "cancelar"). Si YA estábamos esperando ubicación desde
+            # el turno anterior, no repetimos ese mismo texto fijo: redactamos
+            # uno que reconozca que ya se pidió antes y retome el pedido en
+            # curso (gracias a la salvaguarda de arriba, en este punto
+            # siempre hay al menos un producto). Solo usamos el texto fijo
+            # genérico la primera vez que se pide la ubicación.
+            if draft_previo.get("estado") == "esperando_ubicacion":
+                respuesta_ubicacion = (
+                    "Sigo esperando que compartas tu ubicación de WhatsApp o que "
+                    f"me escribas tu dirección para tu pedido de "
+                    f"{_resumen_productos_corto(resultado.get('productos') or [])}."
+                )
+            else:
+                respuesta_ubicacion = MENSAJE_PEDIR_UBICACION
+        return respuesta_ubicacion
 
     if resultado.get("pedido_completo"):
         # No depende de "respuesta_sugerida": el texto que se envía es el
@@ -451,13 +485,18 @@ async def procesar_mensaje(
         draft = get_draft(phone)
         estado = draft.get("estado") if draft else None
 
-        # Cancelación EXPLÍCITA del pedido en curso: se intercepta antes de
-        # llamar al LLM y antes de cualquier otra rama del flujo, para que
-        # funcione sin importar en qué estado esté el draft (armando,
-        # esperando_ubicacion, esperando_confirmacion). Es la única forma de
-        # vaciar un draft con productos (ver salvaguarda correspondiente en
-        # _aplicar_resultado_llm, que protege contra que un simple saludo o
-        # interjección ambigua lo haga por error).
+        # Cancelación EXPLÍCITA del pedido/estado en curso: se intercepta antes
+        # de llamar al LLM y antes de cualquier otra rama del flujo. La
+        # condición es "existe cualquier draft", sin importar si tiene
+        # productos (armando, esperando_confirmacion) o si es un estado
+        # "fantasma" sin productos (esperando_ubicacion con "productos": [],
+        # ver salvaguarda en _aplicar_resultado_llm que puede dejar ese estado
+        # tras perderse el draft en memoria por un reinicio del proceso — ver
+        # TEMPORAL en draft_store.py). "cancelar" debe limpiar CUALQUIERA de
+        # estos casos, no solo cuando hay productos: clear_draft(phone) borra
+        # el draft completo (productos, estado/esperando_ubicacion,
+        # ubicacion_rechazada, dirección, todo), así que no queda ningún
+        # resto del pedido anterior.
         if draft is not None and _es_cancelacion_explicita(message_text):
             clear_draft(phone)
             return MENSAJE_PEDIDO_CANCELADO

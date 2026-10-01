@@ -2,8 +2,11 @@
 Script temporal para simular, a través de procesar_mensaje, el camino
 alternativo de un cliente NUEVO que rechaza compartir su ubicación de
 WhatsApp (ver "ubicacion_rechazada" en el SYSTEM_PROMPT de
-app/services/agent_service.py y las salvaguardas correspondientes en
-app/services/order_flow.py).
+app/services/agent_service.py), las salvaguardas de "un saludo no anula el
+pedido" / cancelación explícita, y las correcciones de fondo del bug en
+producción del 2026-10-01 (teléfono 56957721243): "esperando_ubicacion" sin
+productos, cancelación que no actuaba sobre un estado "fantasma", y
+repetición del mismo mensaje fijo de ubicación turno tras turno.
 No es parte del código final: solo para validar manualmente el comportamiento.
 
 Cada caso usa un teléfono nuevo y distinto (ninguno debe existir todavía como
@@ -13,15 +16,9 @@ pedido (_confirmar_pedido nunca se llama aquí), no se crea ningún Cliente en
 la BD al correr este script, así que puede repetirse sin "ensuciar" los
 teléfonos usados.
 
-Cada conversación llega primero hasta el estado "esperando_ubicacion" con un
-turno inicial ("Quiero 1 Dispensador USB, soy <Nombre>"), y luego envía el
-mensaje de prueba correspondiente para observar si el bot:
-  - sigue pidiendo la ubicación retomando el pedido en curso (saludo o
-    interjección ambigua, sin rechazo ni cancelación), o
-  - avanza aceptando la dirección en texto (detectó rechazo + dirección), o
-  - pide la dirección en texto en vez de insistir en la ubicación (detectó
-    rechazo pero todavía no tiene dirección), o
-  - vacía el pedido por completo (cancelación explícita).
+Cada caso define su propia secuencia de "turnos" (mensajes de texto
+sucesivos del cliente) y una función "verificar" que recibe el draft final y
+la lista de respuestas del bot para decidir OK/FALLO.
 
 Uso: python -m scripts.test_ubicacion_rechazada
 """
@@ -58,22 +55,22 @@ CASOS = [
     {
         "descripcion": '"hola?" no es un rechazo ni una cancelación: debe retomar el pedido y seguir pidiendo ubicación',
         "phone": "56930000001",
-        "mensaje": "hola?",
-        "verificar": lambda draft, respuesta: _retomo_pedido_sin_perderlo(draft),
+        "turnos": [MENSAJE_INICIAL, "hola?"],
+        "verificar": lambda draft, respuestas: _retomo_pedido_sin_perderlo(draft),
         "esperado": "sigue esperando ubicación, conserva productos, ubicacion_rechazada=false",
     },
     {
         "descripcion": '"ok" no es un rechazo ni una cancelación: debe retomar el pedido y seguir pidiendo ubicación',
         "phone": "56930000002",
-        "mensaje": "ok",
-        "verificar": lambda draft, respuesta: _retomo_pedido_sin_perderlo(draft),
+        "turnos": [MENSAJE_INICIAL, "ok"],
+        "verificar": lambda draft, respuestas: _retomo_pedido_sin_perderlo(draft),
         "esperado": "sigue esperando ubicación, conserva productos, ubicacion_rechazada=false",
     },
     {
         "descripcion": "Rechazo explícito + dirección en el mismo mensaje: debe avanzar",
         "phone": "56930000003",
-        "mensaje": "no tengo esa opción, mi dirección es Av. Siempre Viva 742",
-        "verificar": lambda draft, respuesta: (
+        "turnos": [MENSAJE_INICIAL, "no tengo esa opción, mi dirección es Av. Siempre Viva 742"],
+        "verificar": lambda draft, respuestas: (
             _avanzo(draft)
             and draft.get("ubicacion_rechazada") is True
             and draft.get("direccion_texto") == "Av. Siempre Viva 742"
@@ -83,8 +80,8 @@ CASOS = [
     {
         "descripcion": "Rechazo implícito ('prefiero escribirla') + dirección: debe avanzar",
         "phone": "56930000004",
-        "mensaje": "prefiero escribirla: Calle Falsa 123",
-        "verificar": lambda draft, respuesta: (
+        "turnos": [MENSAJE_INICIAL, "prefiero escribirla: Calle Falsa 123"],
+        "verificar": lambda draft, respuestas: (
             _avanzo(draft)
             and draft.get("ubicacion_rechazada") is True
             and draft.get("direccion_texto") == "Calle Falsa 123"
@@ -94,45 +91,65 @@ CASOS = [
     {
         "descripcion": "Rechazo sin dirección alternativa: debe pedir la dirección en texto, no la ubicación",
         "phone": "56930000005",
-        "mensaje": "no puedo",
-        "verificar": lambda draft, respuesta: (
+        "turnos": [MENSAJE_INICIAL, "no puedo"],
+        "verificar": lambda draft, respuestas: (
             draft is not None
             and draft.get("ubicacion_rechazada") is True
             and draft.get("estado") != "esperando_ubicacion"
             and draft.get("direccion_texto") is None
-            and "ubicación de whatsapp" not in respuesta.lower()
-            and "📎" not in respuesta
+            and "ubicación de whatsapp" not in respuestas[-1].lower()
+            and "📎" not in respuestas[-1]
         ),
         "esperado": "ubicacion_rechazada=true, direccion_texto sigue null, respuesta pide dirección (no ubicación)",
     },
     {
         "descripcion": '"sigues ahí?" no es un rechazo ni una cancelación: debe retomar el pedido y seguir pidiendo ubicación',
         "phone": "56930000006",
-        "mensaje": "sigues ahí?",
-        "verificar": lambda draft, respuesta: _retomo_pedido_sin_perderlo(draft),
+        "turnos": [MENSAJE_INICIAL, "sigues ahí?"],
+        "verificar": lambda draft, respuestas: _retomo_pedido_sin_perderlo(draft),
         "esperado": "sigue esperando ubicación, conserva productos, ubicacion_rechazada=false",
     },
     {
         "descripcion": '"cancela" SÍ debe vaciar el pedido en curso por completo',
         "phone": "56930000007",
-        "mensaje": "cancela",
-        "verificar": lambda draft, respuesta: (
-            draft is None and "cancel" in respuesta.lower()
+        "turnos": [MENSAJE_INICIAL, "cancela"],
+        "verificar": lambda draft, respuestas: (
+            draft is None and "cancel" in respuestas[-1].lower()
         ),
         "esperado": "el draft queda en None (pedido cancelado por completo)",
     },
+    {
+        "descripcion": (
+            '"hola" como PRIMER mensaje (sin pedido previo): no debe dejar '
+            "esperando_ubicacion=True para un pedido vacío"
+        ),
+        "phone": "56930000008",
+        "turnos": ["hola"],
+        "verificar": lambda draft, respuestas: (
+            draft is None or draft.get("estado") != "esperando_ubicacion"
+        ),
+        "esperado": "el draft (si existe) no queda en estado 'esperando_ubicacion' sin productos",
+    },
+    {
+        "descripcion": '"hola" y luego "cancelar": el draft debe quedar completamente limpio',
+        "phone": "56930000009",
+        "turnos": ["hola", "cancelar"],
+        "verificar": lambda draft, respuestas: draft is None,
+        "esperado": "el draft queda en None tras cancelar",
+    },
+    {
+        "descripcion": (
+            "Pedido en curso en 'esperando_ubicacion' y luego 'cancelar' "
+            "(reproduce el bug de producción): debe vaciar todo"
+        ),
+        "phone": "56930000010",
+        "turnos": [MENSAJE_INICIAL, "cancelar"],
+        "verificar": lambda draft, respuestas: (
+            draft is None and "cancel" in respuestas[-1].lower()
+        ),
+        "esperado": "el draft queda en None (pedido y esperando_ubicacion vaciados por completo)",
+    },
 ]
-
-
-async def _llegar_a_esperando_ubicacion(phone: str) -> tuple[str, dict | None]:
-    respuesta = await procesar_mensaje(
-        phone=phone,
-        message_type="text",
-        message_text=MENSAJE_INICIAL,
-        location=None,
-    )
-    draft = get_draft(phone)
-    return respuesta, draft
 
 
 async def main() -> None:
@@ -155,40 +172,25 @@ async def main() -> None:
             print()
             continue
 
-        print("--- Turno 1 (llega hasta 'esperando_ubicacion') ---")
-        print(f"Cliente: {MENSAJE_INICIAL}")
-        respuesta_inicial, draft_inicial = await _llegar_a_esperando_ubicacion(phone)
-        print(f"Bot: {respuesta_inicial}")
-
-        if draft_inicial is None or draft_inicial.get("estado") != "esperando_ubicacion":
-            print(
-                "[ERROR] No se alcanzó el estado 'esperando_ubicacion' tras el turno "
-                f"inicial (estado actual: {draft_inicial.get('estado') if draft_inicial else None}). "
-                "No se puede probar este caso."
+        respuestas = []
+        for j, mensaje in enumerate(caso["turnos"], start=1):
+            print(f"--- Turno {j}/{len(caso['turnos'])} ---")
+            print(f"Cliente: {mensaje}")
+            respuesta = await procesar_mensaje(
+                phone=phone,
+                message_type="text",
+                message_text=mensaje,
+                location=None,
             )
-            resultados.append((caso["descripcion"], False))
-            print()
-            continue
+            print(f"Bot: {respuesta}")
+            respuestas.append(respuesta)
 
-        print()
-        print("--- Turno 2 (mensaje de prueba) ---")
-        print(f"Cliente: {caso['mensaje']}")
-        respuesta = await procesar_mensaje(
-            phone=phone,
-            message_type="text",
-            message_text=caso["mensaje"],
-            location=None,
-        )
         draft = get_draft(phone)
-        print(f"Bot: {respuesta}")
         print(f"Draft resultante: {draft}")
-
-        avanzo = _avanzo(draft)
-        print(f"¿El pedido avanzó (ya no está en 'esperando_ubicacion')?: {avanzo}")
         print(f"Esperado: {caso['esperado']}")
 
         try:
-            ok = bool(caso["verificar"](draft, respuesta))
+            ok = bool(caso["verificar"](draft, respuestas))
         except Exception as exc:
             print(f"[ERROR] Falló la verificación del caso: {exc!r}")
             ok = False
