@@ -9,8 +9,9 @@ from sqlalchemy.orm import selectinload
 
 from app.core.config import settings
 from app.core.database import SessionLocal
-from app.models import Cliente, DetallePedido, Pedido, Producto
+from app.models import DetallePedido, Pedido, Producto
 from app.models.enums import EstadoPedido
+from app.services.cliente_lookup import buscar_clientes_por_telefono
 
 logger = logging.getLogger(__name__)
 
@@ -81,6 +82,16 @@ Tu tarea es leer el mensaje del cliente (y el contexto de la conversación previ
   "nombre_cliente": null o string,
   "respuesta_sugerida": "..."
 }
+
+Rol del backend (importante): el backend calcula por su cuenta qué dato falta y qué se le pregunta al cliente en cada turno (producto, nombre, confirmación de dirección, dirección, ubicación, "¿algo más?", resumen). Tu tarea principal es EXTRAER con precisión los datos del mensaje en los campos del JSON. Tu "respuesta_sugerida" solo se usa para consultas de precio/pedidos, temas fuera de alcance y preguntas sobre productos (nuevo/recarga, modelo de dispensador, capacidad de la promo); en los demás casos el backend la reemplaza.
+- El contexto puede traer "pregunta_pendiente": la última pregunta que el backend le hizo al cliente. Interpreta el mensaje actual como respuesta a esa pregunta:
+  - "confirmar_direccion": se le preguntó "¿Despachamos a {su dirección registrada}?". "sí"/"ok"/"esa misma" → "usa_direccion_habitual": true. "no"/"es otra" → "usa_direccion_habitual": false (y si en el mismo mensaje da la dirección nueva, captúrala en "direccion_texto").
+  - "nombre": el mensaje es el nombre del cliente → "nombre_cliente".
+  - "direccion": el mensaje trae la dirección de despacho en texto → "direccion_texto" (y/o un rechazo a compartir la ubicación, ver "ubicacion_rechazada").
+  - "ubicacion": se le pidió compartir su ubicación de WhatsApp; si dice que no puede o no quiere → "ubicacion_rechazada": true.
+  - "algo_mas": equivale a "algo_mas_preguntado": true (ver el paso "¿algo más?" más abajo).
+  - "producto" o null: el cliente todavía no tiene productos aclarados.
+- Si "es_cliente_nuevo" es false, el cliente ya está registrado: nunca le pidas su nombre.
 
 Reglas para "intencion":
 - "pedido": el cliente está pidiendo uno o más productos del catálogo, con o sin cantidad especificada (aunque no haya aclarado todavía si es "nuevo" o "recarga").
@@ -341,15 +352,17 @@ ESTADOS_PEDIDO_ACTIVOS = (
 
 async def _construir_respuesta_pedidos(phone: str) -> str:
     async with SessionLocal() as session:
-        result = await session.execute(select(Cliente).where(Cliente.telefono == phone))
-        cliente = result.scalar_one_or_none()
+        clientes = await buscar_clientes_por_telefono(session, phone)
 
-        if cliente is None:
+        if not clientes:
             return "Aún no tienes pedidos registrados con nosotros."
 
         result = await session.execute(
             select(Pedido)
-            .where(Pedido.cliente_id == cliente.id, Pedido.estado.in_(ESTADOS_PEDIDO_ACTIVOS))
+            .where(
+                Pedido.cliente_id.in_([cliente.id for cliente in clientes]),
+                Pedido.estado.in_(ESTADOS_PEDIDO_ACTIVOS),
+            )
             .order_by(Pedido.creado_en.desc())
             .options(selectinload(Pedido.detalles).selectinload(DetallePedido.producto))
         )
