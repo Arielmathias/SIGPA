@@ -1,6 +1,6 @@
 # Entorno local de n8n para SIGPA.
-# n8n solo orquesta: dispara procesos y llama a endpoints REST del backend
-# FastAPI. No se conecta directo a Supabase.
+# Expone el webhook de rutas que llama el backend FastAPI (geocodifica y
+# optimiza). No se conecta directo a Supabase ni escribe en la base.
 #
 # Uso: cp .env.example .env  (completar valores)  ->  docker compose up -d
 
@@ -11,15 +11,15 @@ services:
     restart: unless-stopped
     ports:
       - "5678:5678"
-    # URL del backend, secreto compartido y API key de ORS vienen solo
-    # del .env (nunca hardcodeadas aquí).
+    # Secreto compartido, depósito y API key de ORS vienen solo del .env
+    # (nunca hardcodeados aquí).
     env_file: .env
     environment:
       # Huso horario de Chile: lo usan los nodos Cron/Schedule de n8n.
       # Debe calzar con el manejo de hora de Chile del resto del proyecto.
       - GENERIC_TIMEZONE=America/Santiago
       - TZ=America/Santiago
-      # Permite leer SIGPA_BACKEND_URL y demás con {{ $env.X }} en los nodos.
+      # Permite leer SIGPA_ROUTE_WEBHOOK_SECRET y demás con {{ $env.X }} en los nodos.
       - N8N_BLOCK_ENV_ACCESS_IN_NODE=false
       - N8N_DIAGNOSTICS_ENABLED=false
     volumes:

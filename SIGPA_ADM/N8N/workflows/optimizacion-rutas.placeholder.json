@@ -1,31 +1,59 @@
 {
-  "_nota": "BORRADOR NO FUNCIONAL. No es un workflow importable de n8n; es un esqueleto de referencia para EP-04 (optimización de rutas).",
+  "_nota": "BORRADOR NO FUNCIONAL. No es un workflow importable de n8n; es un esqueleto de referencia para EP-04 (optimización de rutas). El contrato de request/respuesta está en ../README.md y en Backend/app/services/ruta_service.py.",
   "name": "SIGPA - Optimización de rutas (placeholder)",
   "active": false,
   "nodes": [
     {
-      "name": "Cron diario",
-      "type": "n8n-nodes-base.scheduleTrigger",
+      "name": "Webhook rutas",
+      "type": "n8n-nodes-base.webhook",
       "parameters": {
-        "rule": "diario",
-        "hora": "TODO: definir horario (America/Santiago)"
-      }
+        "httpMethod": "POST",
+        "path": "sigpa-ruta",
+        "responseMode": "responseNode"
+      },
+      "notes": "Lo llama el backend desde POST /rutas/planificar con {\"paradas\": [{pedido_id, direccion_texto, latitud, longitud}]}."
     },
     {
-      "name": "Planificar rutas (backend)",
+      "name": "Validar secreto",
+      "type": "n8n-nodes-base.if",
+      "parameters": {
+        "condicion": "{{ $json.headers['x-route-secret'] === $env.SIGPA_ROUTE_WEBHOOK_SECRET }}"
+      },
+      "notes": "TODO: si no coincide, responder 401 y no procesar."
+    },
+    {
+      "name": "Geocodificar paradas sin coordenadas",
       "type": "n8n-nodes-base.httpRequest",
       "disabled": true,
       "parameters": {
-        "method": "POST",
-        "url": "{{SIGPA_BACKEND_URL}}/rutas/planificar",
-        "headers": {
-          "TODO-header-secreto": "{{SIGPA_INTERNAL_SECRET}}"
-        }
+        "url": "https://api.openrouteservice.org/geocode/search",
+        "apiKey": "{{ $env.OPENROUTESERVICE_API_KEY }}"
       },
-      "notes": "TODO: el endpoint /rutas/planificar aún NO existe en el backend FastAPI. El nombre del header del secreto compartido se define al construirlo (patrón X-Cron-Secret). n8n no llama a OpenRouteService ni a Supabase directo si esa lógica vive en el backend."
+      "notes": "TODO: solo para las paradas con latitud/longitud null. Las que no se puedan geocodificar van a sin_resolver con su motivo."
+    },
+    {
+      "name": "Optimizar orden desde el depósito",
+      "type": "n8n-nodes-base.httpRequest",
+      "disabled": true,
+      "parameters": {
+        "url": "https://api.openrouteservice.org/optimization",
+        "deposito": "{{ $env.DEPOSITO_LATITUD }}, {{ $env.DEPOSITO_LONGITUD }}"
+      },
+      "notes": "TODO: devuelve el orden de visita; orden_entrega 1 = primera parada."
+    },
+    {
+      "name": "Responder al backend",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "parameters": {
+        "respuesta": "{\"ruta\": [{pedido_id, orden_entrega, latitud, longitud}], \"sin_resolver\": [{pedido_id, motivo}]}"
+      },
+      "notes": "Cada pedido enviado debe aparecer exactamente una vez (en ruta o en sin_resolver). n8n no escribe en la base de datos."
     }
   ],
   "connections": {
-    "Cron diario": ["Planificar rutas (backend)"]
+    "Webhook rutas": ["Validar secreto"],
+    "Validar secreto": ["Geocodificar paradas sin coordenadas"],
+    "Geocodificar paradas sin coordenadas": ["Optimizar orden desde el depósito"],
+    "Optimizar orden desde el depósito": ["Responder al backend"]
   }
 }

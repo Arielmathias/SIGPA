@@ -5,15 +5,49 @@ optimización de rutas (EP-04).
 
 ## Cómo encaja en la arquitectura
 
-- **El backend FastAPI tiene la lógica.** Toda la automatización pesada (cálculo de rutas,
-  acceso a datos, llamadas a servicios externos) vive en el backend.
-- **n8n solo orquesta:** dispara el proceso (p. ej. un cron diario) y llama a endpoints REST
-  del backend, autenticándose con un secreto compartido.
-- **n8n no se conecta directo a Supabase.** Todo dato pasa por el backend.
+La ruta se genera a pedido de la ejecutiva desde el panel, no con un cron:
 
 ```
-[n8n: Cron diario] --POST + secreto--> [FastAPI: /rutas/planificar] --> Supabase / OpenRouteService
+[Panel] --POST /rutas/planificar (JWT)--> [FastAPI] --POST + X-Route-Secret--> [n8n: webhook]
+                                              ^                                     |
+                                              |       geocodifica (OpenRouteService)
+                                              |       y optimiza el orden de las paradas
+                                              +---------- respuesta JSON <----------+
 ```
+
+- **El backend FastAPI arma las paradas** desde la BD con los pedidos que eligió la ejecutiva,
+  llama al webhook de n8n de forma síncrona, **valida** la respuesta y la **persiste** (pedidos a
+  "confirmado" con su `orden_entrega`). Ver `Backend/app/services/ruta_service.py`.
+- **n8n geocodifica y optimiza:** recibe las paradas, geocodifica las que vienen sin coordenadas
+  (OpenRouteService), calcula el orden desde el depósito y responde. Las coordenadas del depósito
+  viven solo en n8n.
+- **n8n no escribe en la base de datos** ni se conecta a Supabase.
+
+### Contrato con el backend
+
+Request que envía el backend (`POST` al webhook, header `X-Route-Secret`):
+
+```json
+{"paradas": [{"pedido_id": 12, "direccion_texto": "Santa Maria 793", "latitud": -33.1229, "longitud": -71.5709},
+             {"pedido_id": 15, "direccion_texto": "Los Pinos 456, Quilpué", "latitud": null, "longitud": null},
+             {"pedido_id": 18, "direccion_texto": "Pasaje sin número", "latitud": null, "longitud": null}]}
+```
+
+Respuesta que debe devolver n8n (200, JSON):
+
+```json
+{"ruta": [{"pedido_id": 15, "orden_entrega": 1, "latitud": -33.0478, "longitud": -71.4412},
+          {"pedido_id": 12, "orden_entrega": 2, "latitud": -33.1229, "longitud": -71.5709}],
+ "sin_resolver": [{"pedido_id": 18, "motivo": "No se pudo geocodificar la dirección"}]}
+```
+
+Reglas que el backend valida (si no se cumplen, no guarda nada y responde error al panel):
+
+- Cada pedido enviado aparece **exactamente una vez**, en `ruta` o en `sin_resolver`; ningún
+  `pedido_id` que no se haya enviado.
+- `orden_entrega`: enteros positivos, sin repetir (1 = primera parada).
+- `latitud` en [-90, 90] y `longitud` en [-180, 180].
+- El webhook debe responder antes de `N8N_ROUTE_TIMEOUT_SECONDS` (default 45 s del lado del backend).
 
 ## Levantarlo
 
@@ -40,11 +74,12 @@ se interpretan en hora de Chile, igual que el resto del proyecto.
 La cuenta queda guardada en el volumen `sigpa_n8n_data`, así que sobrevive a
 `docker compose down` / `up`. Con `docker compose down -v` se borra y hay que crearla de nuevo.
 
-Dentro de los nodos, las variables del `.env` se leen como `{{ $env.SIGPA_BACKEND_URL }}`,
-`{{ $env.SIGPA_INTERNAL_SECRET }}`, etc.
+Dentro de los nodos, las variables del `.env` se leen como `{{ $env.SIGPA_ROUTE_WEBHOOK_SECRET }}`,
+`{{ $env.OPENROUTESERVICE_API_KEY }}`, etc.
 
-Si el backend corre en local en paralelo, desde el contenedor se alcanza en
-`http://host.docker.internal:8000` (no `localhost`).
+Para probar con el backend corriendo en local, el backend debe apuntar al webhook de este
+contenedor: `N8N_ROUTE_WEBHOOK_URL=http://localhost:5678/webhook/sigpa-ruta` (o la URL de test
+`/webhook-test/...` mientras el workflow no esté activo).
 
 ## Workflows: exportar e importar
 
@@ -54,11 +89,13 @@ desde el editor y desde la CLI.
 
 ## Qué falta para que el workflow real funcione
 
-1. **Endpoint `/rutas/planificar` en el backend FastAPI** — todavía no existe.
-   `workflows/optimizacion-rutas.placeholder.json` apunta a él con un TODO.
+1. **Construir el workflow** `optimizacion-rutas`: nodo Webhook (POST) → validar el header
+   `X-Route-Secret` → geocodificar las paradas sin coordenadas → optimizar el orden desde el
+   depósito → responder con el contrato de arriba. Hoy solo existe el borrador
+   `workflows/optimizacion-rutas.placeholder.json`.
 2. **API key de OpenRouteService** — generarla en <https://openrouteservice.org> (nivel gratuito)
    y ponerla en `OPENROUTESERVICE_API_KEY`.
-3. **Header y secreto compartido con el backend** — definir el nombre del header (patrón
-   `X-Cron-Secret` de `/internal/recordatorio-diario`) y el valor de `SIGPA_INTERNAL_SECRET`,
-   el mismo en el `.env` de n8n y en las variables del backend.
-4. **Horario del cron** — definir a qué hora (Chile) se planifican las rutas.
+3. **Coordenadas del depósito** en `DEPOSITO_LATITUD` / `DEPOSITO_LONGITUD`.
+4. **Secreto compartido:** el mismo valor en `SIGPA_ROUTE_WEBHOOK_SECRET` (aquí) y en
+   `N8N_ROUTE_WEBHOOK_SECRET` (backend). En el backend, además, `N8N_ROUTE_WEBHOOK_URL` con la
+   URL de producción del webhook.
