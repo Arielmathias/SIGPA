@@ -129,6 +129,10 @@ PREGUNTA_CANCELAR = "¿Quieres cancelar el pedido? Responde CANCELAR, o dime qu�
 
 PREFIJO_REPETIR_RESUMEN = "Antes de confirmar, revisemos tu pedido una vez más."
 
+PREGUNTA_OPCIONES_PEDIDO = "¿Quieres cambiar algo, confirmar el pedido o cancelarlo?"
+
+MENSAJE_DUDA_GENERICA = "Perdón por la confusión. Tengo anotado en tu pedido: {pedido}."
+
 MENSAJE_PRODUCTOS_NO_REGISTRADOS = (
     "Antes de mostrarte el resumen, revisemos tu pedido: tengo anotado {registrados}, "
     "pero también mencionaste {faltantes}, que no quedó registrado. ¿Qué quieres agregar? "
@@ -374,6 +378,18 @@ def _menciona_algun_producto(texto_normalizado: str) -> bool:
     return any(_menciona_tipo(tipo, texto_normalizado) for tipo in _PATRONES_TIPO_PRODUCTO)
 
 
+_PATRON_TEMA_PEDIDO = re.compile(
+    r"\b(pedido\w*|total|cobr\w*|asum\w*|supus\w*|entreg\w*|despach\w*|resumen|envio)\b"
+)
+
+
+def _habla_del_pedido(texto_normalizado: str) -> bool:
+    """El mensaje habla del pedido, sus productos o la entrega (y por lo
+    tanto no está fuera de alcance aunque el LLM lo marque así): "¿por qué
+    asumes que quiero bidones de 12?". "¿Cuánto cuesta una pizza?" no."""
+    return _menciona_algun_producto(texto_normalizado) or bool(_PATRON_TEMA_PEDIDO.search(texto_normalizado))
+
+
 def _intencion_cancelar(texto: str | None, texto_libre: bool = False) -> str | None:
     """"cancelar" si el mensaje cancela el pedido en curso, "duda" si podría
     querer cancelar pero no es claro (hay que preguntarle), None si no.
@@ -513,7 +529,7 @@ def _capacidad_en(tokens: list[str], j: int) -> int | None:
         siguiente = tokens[j + 1] if j + 1 < len(tokens) else ""
         if siguiente in ("l", "lt", "lts", "litro", "litros"):
             return int(tokens[j])
-        if int(tokens[j]) in _CAPACIDADES and j > 0 and tokens[j - 1] == "de":
+        if int(tokens[j]) in _CAPACIDADES and j > 0 and tokens[j - 1] in ("de", "a", "por"):
             return int(tokens[j])
     return None
 
@@ -1197,6 +1213,7 @@ def _contexto_desde_draft(draft: dict | None) -> dict | None:
         "nombre_cliente": draft.get("nombre_cliente"),
         "algo_mas_preguntado": draft.get("paso") == "algo_mas",
         "pregunta_pendiente": draft.get("paso"),
+        "resumen_mostrado": draft.get("estado") in (ESTADO_ESPERANDO_CONFIRMACION, ESTADO_ESPERANDO_MODIFICACION),
     }
 
 
@@ -1310,33 +1327,28 @@ def _texto_paso(
     raise ValueError(f"Paso desconocido: {paso}")
 
 
-def _datos_despacho(draft: dict, cliente: dict | None) -> tuple[str, str, str]:
-    """(nombre, dirección de despacho, estado de la ubicación) para el
-    resumen previo a confirmar."""
+def _datos_despacho(draft: dict, cliente: dict | None) -> tuple[str, str]:
+    """(nombre, dirección de despacho) para el resumen previo a confirmar. Las
+    coordenadas no se muestran al cliente; se guardan al confirmar (ver
+    _confirmar_pedido)."""
     nombre = cliente["nombre"] if cliente is not None else draft.get("nombre_cliente")
     if cliente is not None and draft.get("usa_direccion_habitual"):
         direccion = cliente["direccion"]
-        tiene_coordenadas = cliente.get("latitud") is not None and cliente.get("longitud") is not None
-        ubicacion = "registrada" if tiene_coordenadas else "sin ubicación registrada"
     else:
         direccion = draft.get("direccion_texto")
-        if draft.get("ubicacion") is not None:
-            ubicacion = "compartida por WhatsApp"
-        else:
-            ubicacion = "no compartida (despacho solo con la dirección escrita)"
-    return nombre, direccion, ubicacion
+    return nombre, direccion
 
 
 async def _construir_resumen(draft: dict, cliente: dict | None) -> dict:
     resumen = await construir_resumen_pedido(draft.get("productos") or [])
-    nombre, direccion, ubicacion = _datos_despacho(draft, cliente)
+    nombre, direccion = _datos_despacho(draft, cliente)
     lineas_texto = "\n".join(
         f'- {linea["cantidad"]}x {linea["nombre"]} — {_formatear_clp(linea["subtotal"])}'
         for linea in resumen["lineas"]
     )
     bloques = [
         f"Resumen de tu pedido:\n{lineas_texto}\nTotal: {_formatear_clp(resumen['total'])}",
-        f"Nombre: {nombre}\nDirección de despacho: {direccion}\nUbicación: {ubicacion}",
+        f"Nombre: {nombre}\nDirección de despacho: {direccion}",
     ]
     if draft.get("notas"):
         bloques.append(f"Notas: {draft['notas']}")
@@ -1440,9 +1452,26 @@ async def _aplicar_resultado_llm(
     productos_previos = draft_previo.get("productos") or []
     aclaracion_previa = draft_previo.get("aclaracion_pendiente")
     aclaracion_llm = resultado.get("aclaracion_pendiente")
+    extraidos = resultado.get("productos") or []
     respuesta_llm = resultado.get("respuesta_sugerida")
     texto = _normalizar_texto(mensaje)
     modificacion_explicita = bool(_PATRON_MODIFICACION.search(texto))
+
+    # Pregunta, queja o duda sobre el pedido en curso ("¿por qué asumes que
+    # quiero bidones de 12?"): se responde, nunca con "fuera de alcance". Si
+    # el LLM igual la marcó fuera de alcance, su texto no sirve y se usa uno
+    # genérico. En una duda no se agrega ni se deja pendiente nada: los
+    # productos que nombra son de lo que se queja, no un pedido nuevo.
+    hay_pedido_previo = bool(productos_previos or aclaracion_previa or draft_previo.get("pendientes_modelo"))
+    respuesta_duda = None
+    es_duda = hay_pedido_previo and (
+        intencion == "duda_pedido" or (intencion == "fuera_de_alcance" and _habla_del_pedido(texto))
+    )
+    if es_duda:
+        respuesta_duda = respuesta_llm if intencion == "duda_pedido" else None
+        intencion = "duda_pedido"
+        resultado = {"intencion": intencion}
+        extraidos, aclaracion_llm, respuesta_llm, mensaje, texto = [], None, None, None, ""
     catalogo = await _catalogo()
     no_encontrados: list[dict] = []
     lineas_codigo: list[dict] = []
@@ -1470,9 +1499,7 @@ async def _aplicar_resultado_llm(
 
     # 2. Lo que extrajo el LLM: solo productos del catálogo y con atributos
     # que el cliente dijo (nunca una capacidad o un modelo supuesto).
-    aceptados, nombres_no_encontrados = _validar_extraidos(
-        resultado.get("productos") or [], mensaje, productos_previos, catalogo
-    )
+    aceptados, nombres_no_encontrados = _validar_extraidos(extraidos, mensaje, productos_previos, catalogo)
     no_encontrados += [
         {"texto": f"«{nombre}»", "opciones": _sugerencias(nombre, None, catalogo)}
         for nombre in nombres_no_encontrados
@@ -1489,7 +1516,7 @@ async def _aplicar_resultado_llm(
     # una consulta ("¿cuánto cuesta el dispensador?") no se está pidiendo
     # nada.
     bidon_mencionado = None
-    if intencion in ("consulta_precio", "consulta_pedidos"):
+    if intencion in ("consulta_precio", "consulta_pedidos", "duda_pedido"):
         pass
     elif not modificacion_explicita:
         menciones = [m for m in _menciones_productos(texto) if m["familia"] not in familias_resueltas]
@@ -1617,17 +1644,28 @@ async def _aplicar_resultado_llm(
         save_draft(phone, {**nuevo_draft, "paso": "producto", "estado": "armando"})
         paso, texto = "producto", PREGUNTA_PRODUCTO
 
-    if (
+    # Con el pedido listo para confirmar, una respuesta a otra cosa (duda,
+    # tema fuera de alcance) no va pegada al resumen: va seguida de las
+    # opciones, y el pedido pasa a esperando_modificacion para que un "sí"
+    # suelto no lo confirme (solo se confirma justo después del resumen).
+    siguiente = PREGUNTA_OPCIONES_PEDIDO if paso == "confirmacion" else texto
+    if es_duda:
+        respuesta = respuesta_duda or MENSAJE_DUDA_GENERICA.format(pedido=_resumen_productos_corto(productos))
+        texto = f"{respuesta}\n\n{siguiente}"
+    elif (
         intencion in _INTENCIONES_RESPUESTA_LLM
         and resultado.get("respuesta_sugerida")
         and not (intencion == "fuera_de_alcance" and hay_pendientes)
     ):
         # Consulta de precio/pedidos o tema fuera de alcance: se responde lo
         # que preguntó y, si hay un pedido en curso, se retoma el paso
-        # pendiente a continuación. Si el cliente pidió algo que el código
-        # dejó pendiente o no encontró en el catálogo, va la pregunta del
-        # código (el LLM suele responder "fuera de alcance" sin decir qué
-        # producto no existe).
+        # pendiente a continuación (tras una consulta de precio sí se vuelve a
+        # mostrar el resumen). Si el cliente pidió algo que el código dejó
+        # pendiente o no encontró en el catálogo, va la pregunta del código
+        # (el LLM suele responder "fuera de alcance" sin decir qué producto
+        # no existe).
+        if intencion == "fuera_de_alcance":
+            texto = siguiente
         texto = (
             f"{resultado['respuesta_sugerida']}\n\n{texto}"
             if productos or hay_pendientes
@@ -1635,6 +1673,9 @@ async def _aplicar_resultado_llm(
         )
     elif productos_previos and not productos_cambiaron and intencion != "pedido" and paso != "confirmacion":
         texto = f"Sigo con tu pedido de {_resumen_productos_corto(productos)}. {texto}"
+
+    if paso == "confirmacion" and "Resumen de tu pedido" not in texto:
+        save_draft(phone, {**(get_draft(phone) or nuevo_draft), "estado": ESTADO_ESPERANDO_MODIFICACION})
 
     if es_primer_turno:
         texto = f"{_saludo(cliente)} {_quitar_saludo_inicial(texto)}"

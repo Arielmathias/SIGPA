@@ -51,10 +51,12 @@ from app.services.order_flow import (
     MENSAJE_NO_CONFIRMADO,
     MENSAJE_PEDIDO_CANCELADO,
     PREFIJO_REPETIR_RESUMEN,
+    PREGUNTA_OPCIONES_PEDIDO,
     PREGUNTA_CANCELAR,
     _aplicar_resultado_llm,
     _cantidades_por_variante,
     _datos_cliente,
+    _habla_del_pedido,
     _intencion_cancelar,
     _responder_siguiente_paso,
     procesar_mensaje,
@@ -159,14 +161,14 @@ async def _conversar(phone: str, turnos: list[str]) -> list[str]:
     return respuestas
 
 
-async def _preparar_resumen(ctx: dict) -> str:
+async def _preparar_resumen(ctx: dict, productos: list[dict] | None = None) -> str:
     """Deja el draft del cliente de prueba esperando confirmación del
-    resumen (bidones + dispensador, dirección registrada), armado por el
-    mismo código que usa la conversación (_responder_siguiente_paso)."""
+    resumen (por defecto bidones + dispensador, dirección registrada), armado
+    por el mismo código que usa la conversación (_responder_siguiente_paso)."""
     phone = CLIENTE["telefono"]
     draft = {
         "intencion": "pedido",
-        "productos": [dict(item) for item in LINEAS_PEDIDO],
+        "productos": [dict(item) for item in productos or LINEAS_PEDIDO],
         "aclaracion_pendiente": None,
         "notas": None,
         "nombre_cliente": None,
@@ -175,7 +177,6 @@ async def _preparar_resumen(ctx: dict) -> str:
         "ubicacion": None,
         "ubicacion_rechazada": False,
         "algo_mas_respondido": True,
-        "unidades_pedidas": {"Bidón": 4, "Dispensador": 1},
     }
     cliente = _datos_cliente(await _cliente_orm(ctx["cliente_id"]))
     paso, texto = await _responder_siguiente_paso(phone, draft, cliente)
@@ -730,6 +731,101 @@ async def caso_o(ctx: dict, v: Verificador) -> None:
     v.check(not await _pedidos_de(ctx["cliente_id"]), "no se creó pedido")
 
 
+# --------------------------------------------------------------------------
+# Casos de la 3ra prueba real del 2026-10-03 (18:58 hora Chile): ubicación en
+# el resumen y "¿por qué asumes que quiero bidones de 12?" respondido como
+# fuera de alcance.
+# --------------------------------------------------------------------------
+
+LINEAS_12L = [
+    {"nombre_producto": "Bidón 12L Recarga", "cantidad": 2},
+    {"nombre_producto": "Bidón 12L Nuevo", "cantidad": 1},
+]
+
+# Fragmentos del rechazo por "fuera de alcance" que redacta el LLM.
+_RECHAZO_FUERA_DE_ALCANCE = ("solo puedo ayudar", "ejecutivo")
+
+
+def _es_rechazo(texto: str) -> bool:
+    return any(fragmento in texto.lower() for fragmento in _RECHAZO_FUERA_DE_ALCANCE)
+
+
+async def caso_p(ctx: dict, v: Verificador) -> None:
+    phone = CLIENTE["telefono"]
+    resumen = await _preparar_resumen(ctx)
+    v.check("Ubicación" not in resumen and "ubicación" not in resumen, "el resumen no menciona la ubicación")
+    v.check(
+        f"Nombre: {CLIENTE['nombre']}" in resumen and f"Dirección de despacho: {CLIENTE['direccion']}" in resumen,
+        "el resumen sigue con nombre y dirección",
+    )
+    respuestas = await _conversar(phone, ["si"])
+    pedidos = await _pedidos_de(ctx["cliente_id"])
+    v.check(len(pedidos) == 1 and "confirmado" in respuestas[0].lower(), "se confirma igual")
+    v.check(
+        bool(pedidos)
+        and (pedidos[0]["latitud"], pedidos[0]["longitud"]) == (CLIENTE["latitud"], CLIENTE["longitud"]),
+        "el pedido guarda las coordenadas igual que antes",
+    )
+    await _ejecutar(
+        "delete from detalle_pedido where pedido_id in (select id from pedido where cliente_id = :id)",
+        id=ctx["cliente_id"],
+    )
+    await _ejecutar("delete from pedido where cliente_id = :id", id=ctx["cliente_id"])
+
+
+async def caso_q(ctx: dict, v: Verificador) -> None:
+    phone = CLIENTE["telefono"]
+    await _preparar_resumen(ctx, LINEAS_12L)
+    respuestas = await _conversar(phone, ["porque asumes que quiero bidones de 12?"])
+    texto = respuestas[0]
+    draft = get_draft(phone) or {}
+    v.check(not _es_rechazo(texto), "no responde 'fuera de alcance'")
+    v.check("Resumen de tu pedido" not in texto, "no repite el resumen pegado a la respuesta")
+    v.check(PREGUNTA_OPCIONES_PEDIDO in texto, "ofrece cambiar, confirmar o cancelar")
+    v.check(draft.get("estado") == "esperando_modificacion", "pasa a esperando_modificacion")
+    v.check(
+        draft.get("productos") == LINEAS_12L and not draft.get("aclaracion_pendiente"),
+        "la pregunta no cambia el pedido ni deja un bidón pendiente",
+    )
+    respuestas += await _conversar(phone, ["si"])
+    v.check(not await _pedidos_de(ctx["cliente_id"]), "no confirma nada (ni con un 'si' después)")
+    clear_draft(phone)
+
+    # Sin LLM: aunque el LLM la marque fuera de alcance, el código la trata
+    # como duda sobre el pedido.
+    await _preparar_resumen(ctx, LINEAS_12L)
+    cliente = _datos_cliente(await _cliente_orm(ctx["cliente_id"]))
+    resultado = {
+        "intencion": "fuera_de_alcance",
+        "productos": [],
+        "respuesta_sugerida": "Solo puedo ayudar con pedidos de agua de esta distribuidora. "
+        "Si necesitas algo diferente, te sugiero contactar a un ejecutivo.",
+    }
+    texto = await _aplicar_resultado_llm(
+        phone, resultado, get_draft(phone), cliente, "porque asumnes que quiero bidones de 12?"
+    )
+    print(f"  [LLM simulado: fuera de alcance] Bot: {texto}")
+    v.check(not _es_rechazo(texto) and PREGUNTA_OPCIONES_PEDIDO in texto, "el código corrige la clasificación del LLM")
+    v.check((get_draft(phone) or {}).get("estado") == "esperando_modificacion", "y pasa a esperando_modificacion")
+    clear_draft(phone)
+
+
+async def caso_r(ctx: dict, v: Verificador) -> None:
+    phone = CLIENTE["telefono"]
+    v.check(not _habla_del_pedido("cuanto cuesta una pizza"), "'cuánto cuesta una pizza' no habla del pedido")
+    await _preparar_resumen(ctx)
+    respuestas = await _conversar(phone, ["cuánto cuesta una pizza"])
+    texto = respuestas[0]
+    v.check(_es_rechazo(texto), "responde 'fuera de alcance'")
+    v.check("Resumen de tu pedido" not in texto, "sin el resumen pegado al rechazo")
+    v.check(PREGUNTA_OPCIONES_PEDIDO in texto, "ofrece cambiar, confirmar o cancelar")
+    v.check(
+        (get_draft(phone) or {}).get("productos") == LINEAS_PEDIDO and not await _pedidos_de(ctx["cliente_id"]),
+        "el pedido sigue en curso, sin confirmar",
+    )
+    clear_draft(phone)
+
+
 CASOS = [
     ("a", "Mismo wamid entregado 3 veces: se procesa y responde una sola vez; orden por teléfono", caso_a),
     ("b", "'4 bidones de 20' + '2 recargas y 2 nuevos': dos líneas y avanza a la dirección", caso_b),
@@ -746,6 +842,9 @@ CASOS = [
     ("m", "'dispensador' sin modelo pregunta cuál, con precios; nunca elige uno", caso_m),
     ("n", "Producto fuera del catálogo: se avisa, no se descarta en silencio ni avanza", caso_n),
     ("o", "Conversación real completa de la 2da prueba: capacidad y dispensador elegidos", caso_o),
+    ("p", "El resumen no muestra la ubicación (las coordenadas se guardan igual)", caso_p),
+    ("q", "'¿por qué asumes que quiero bidones de 12?' se responde como duda, no fuera de alcance", caso_q),
+    ("r", "'cuánto cuesta una pizza' sí es fuera de alcance, sin el resumen pegado", caso_r),
 ]
 
 
