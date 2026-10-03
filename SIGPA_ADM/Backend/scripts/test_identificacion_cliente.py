@@ -371,13 +371,15 @@ async def caso_i(ctx: dict, v: Verificador) -> None:
 async def caso_j(ctx: dict, v: Verificador) -> None:
     """Falla a mitad de _confirmar_pedido (producto inexistente al crear el
     detalle, DESPUÉS de crear el cliente y su auditoría en la sesión): debe
-    hacer rollback de todo."""
+    hacer rollback de todo. El producto del draft es válido (con uno inválido
+    el flujo ni siquiera llega a confirmar, ver _datos_faltantes); el
+    inexistente va solo en resumen.lineas, que es lo que usa el detalle."""
     phone = TELEFONO_NUEVO_F
     auditoria_desde = await _max_auditoria_id()
     save_draft(
         phone,
         {
-            "productos": [{"nombre_producto": "Producto Inexistente", "cantidad": 1}],
+            "productos": [{"nombre_producto": "Bidón 20L Recarga", "cantidad": 1}],
             "nombre_cliente": "Rollback Test",
             "usa_direccion_habitual": False,
             "direccion_texto": "Calle Rollback 1",
