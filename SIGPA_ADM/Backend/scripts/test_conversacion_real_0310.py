@@ -52,6 +52,7 @@ from app.services.order_flow import (
     MENSAJE_PEDIDO_CANCELADO,
     PREFIJO_REPETIR_RESUMEN,
     PREGUNTA_CANCELAR,
+    _aplicar_resultado_llm,
     _cantidades_por_variante,
     _datos_cliente,
     _intencion_cancelar,
@@ -174,7 +175,7 @@ async def _preparar_resumen(ctx: dict) -> str:
         "ubicacion": None,
         "ubicacion_rechazada": False,
         "algo_mas_respondido": True,
-        "unidades_pedidas": {"Bidón 20L": 4, "Dispensador USB": 1},
+        "unidades_pedidas": {"Bidón": 4, "Dispensador": 1},
     }
     cliente = _datos_cliente(await _cliente_orm(ctx["cliente_id"]))
     paso, texto = await _responder_siguiente_paso(phone, draft, cliente)
@@ -431,13 +432,13 @@ async def caso_i(ctx: dict, v: Verificador) -> None:
         "aclaracion_pendiente": None,
         "usa_direccion_habitual": True,
         "algo_mas_respondido": True,
-        "unidades_pedidas": {"Bidón 20L": 4, "Dispensador USB": 1},
+        "unidades_pedidas": {"Bidón": 4, "Dispensador": 1},
     }
     cliente = _datos_cliente(await _cliente_orm(ctx["cliente_id"]))
     paso, texto = await _responder_siguiente_paso(phone, draft, cliente)
     print(f"  Bot [{paso}]: {texto}")
     v.check(paso != "confirmacion" and not _es_resumen(texto), "no muestra el resumen incompleto")
-    v.check("4x Bidón 20L" in texto, "le dice qué productos no quedaron registrados")
+    v.check("4x Bidón" in texto, "le dice qué productos no quedaron registrados")
     respuestas = await _conversar(phone, ["no"])
     v.check(_es_resumen(respuestas[0]), "si responde que no quiere agregar nada, recién ahí muestra el resumen")
     clear_draft(phone)
@@ -580,6 +581,155 @@ async def caso_k(ctx: dict, v: Verificador) -> None:
     v.check(not captura.registros, "ningún error logueado (la violación no se trata como falla)")
 
 
+# --------------------------------------------------------------------------
+# Casos de la 2da prueba real del 2026-10-03 (17:42 hora Chile): capacidad
+# supuesta, dispensador sin modelo descartado y productos fuera del catálogo.
+# --------------------------------------------------------------------------
+
+
+def _pregunta_capacidad(texto: str) -> bool:
+    return "12L" in texto and "20L" in texto and "nuevo" not in texto.lower()
+
+
+async def caso_l(ctx: dict, v: Verificador) -> None:
+    phone = CLIENTE["telefono"]
+    respuestas = await _conversar(phone, ["quiero 5 bidones"])
+    draft = get_draft(phone) or {}
+    v.check(_pregunta_capacidad(respuestas[0]), "pregunta '¿de 12L o de 20L?' (y todavía no nuevo/recarga)")
+    v.check(not draft.get("productos"), "no agrega ningún bidón (no asume capacidad)")
+    v.check(
+        draft.get("aclaracion_pendiente", {}).get("capacidad_litros") is None
+        and draft.get("aclaracion_pendiente", {}).get("cantidad") == 5,
+        "queda pendiente: 5 bidones, capacidad sin definir",
+    )
+    v.check(draft.get("paso") == "producto", "no avanza del paso 'producto'")
+    clear_draft(phone)
+
+
+async def caso_m(ctx: dict, v: Verificador) -> None:
+    phone = CLIENTE["telefono"]
+    precios = ctx["precios"]
+    respuestas = await _conversar(phone, ["quiero un dispensador"])
+    draft = get_draft(phone) or {}
+    v.check(
+        all(f"{nombre}: {_clp(precios[nombre])}" in respuestas[0] for nombre in ("Dispensador Básico", "Dispensador USB")),
+        "pregunta cuál dispensador, listando los modelos con su precio",
+    )
+    v.check(not draft.get("productos"), "no elige un modelo por su cuenta")
+    v.check(
+        [p["familia"] for p in draft.get("pendientes_modelo") or []] == ["Dispensador"],
+        "queda un dispensador pendiente de modelo",
+    )
+    respuestas += await _conversar(phone, ["el básico"])
+    draft = get_draft(phone) or {}
+    v.check(
+        draft.get("productos") == [{"nombre_producto": "Dispensador Básico", "cantidad": 1}]
+        and not draft.get("pendientes_modelo"),
+        "'el básico' lo resuelve: 1x Dispensador Básico",
+    )
+    clear_draft(phone)
+
+    # Sin LLM: si el LLM elige un modelo que el cliente no dijo, se rechaza y
+    # queda pendiente igual.
+    cliente = _datos_cliente(await _cliente_orm(ctx["cliente_id"]))
+    resultado = {
+        "intencion": "pedido",
+        "productos": [{"nombre_producto": "Dispensador USB", "cantidad": 1, "operacion": "agregar"}],
+        "respuesta_sugerida": "¡Perfecto! ¿Deseas agregar algo más?",
+    }
+    texto = await _aplicar_resultado_llm(phone, resultado, None, cliente, "dispensador")
+    draft = get_draft(phone) or {}
+    print(f"  [LLM simulado elige USB] Bot: {texto}")
+    v.check(
+        not draft.get("productos") and draft.get("pendientes_modelo"),
+        "un 'Dispensador USB' supuesto por el LLM se rechaza y queda pendiente",
+    )
+    clear_draft(phone)
+
+    # Una consulta de precio menciona el producto pero no lo pide.
+    resultado = {
+        "intencion": "consulta_precio",
+        "productos": [],
+        "producto_consultado": "Dispensador Básico",
+        "respuesta_sugerida": 'El precio de "Dispensador Básico" es $7.000.',
+    }
+    await _aplicar_resultado_llm(phone, resultado, None, cliente, "¿cuánto cuesta el dispensador?")
+    v.check(not (get_draft(phone) or {}).get("pendientes_modelo"), "'¿cuánto cuesta el dispensador?' no deja nada pendiente")
+    clear_draft(phone)
+
+
+async def caso_n(ctx: dict, v: Verificador) -> None:
+    phone = CLIENTE["telefono"]
+    respuestas = await _conversar(phone, ["quiero un bidón de 5 litros"])
+    draft = get_draft(phone) or {}
+    v.check("No encontré bidones de 5L" in respuestas[0], "avisa que no hay bidones de 5L")
+    v.check(_pregunta_capacidad(respuestas[0]), "y pregunta de cuál capacidad del catálogo")
+    v.check(draft.get("paso") == "producto" and not draft.get("productos"), "no avanza ni agrega nada")
+    clear_draft(phone)
+
+    # Sin LLM: un nombre fuera del catálogo devuelto por el LLM, con un pedido
+    # en curso en "¿algo más?", no se descarta en silencio ni avanza.
+    cliente = _datos_cliente(await _cliente_orm(ctx["cliente_id"]))
+    draft_previo = {
+        "intencion": "pedido",
+        "productos": [dict(item) for item in LINEAS_BIDONES],
+        "usa_direccion_habitual": True,
+        "algo_mas_respondido": False,
+        "paso": "algo_mas",
+        "estado": "armando",
+        "unidades_pedidas": {"Bidón": 4},
+    }
+    resultado = {
+        "intencion": "pedido",
+        "productos": [{"nombre_producto": "Agua Mineral 1.5L", "cantidad": 2, "operacion": "agregar"}],
+        "pedido_completo": True,
+        "respuesta_sugerida": "¡Listo!",
+    }
+    texto = await _aplicar_resultado_llm(phone, resultado, draft_previo, cliente, "y 2 aguas minerales de 1.5")
+    draft = get_draft(phone) or {}
+    print(f"  [LLM simulado con producto inexistente] Bot: {texto}")
+    v.check("No encontré «Agua Mineral 1.5L»" in texto, "dice qué producto no encontró")
+    v.check(
+        not _es_resumen(texto) and "algo más" not in texto.lower() and draft.get("paso") == "producto",
+        "no avanza a '¿algo más?' ni al resumen",
+    )
+    v.check(draft.get("productos") == LINEAS_BIDONES, "conserva el pedido en curso")
+    clear_draft(phone)
+
+
+async def caso_o(ctx: dict, v: Verificador) -> None:
+    """La conversación real completa, con las respuestas que pide el bot
+    corregido (capacidad y modelo de dispensador)."""
+    phone = CLIENTE["telefono"]
+    respuestas = await _conversar(
+        phone,
+        ["hola", "quiero 5 bidones", "3 recarga y 2 nuevos", "20", "si", "si", "dispensador", "el usb", "no"],
+    )
+    esperado = [
+        {"nombre_producto": "Bidón 20L Recarga", "cantidad": 3},
+        {"nombre_producto": "Bidón 20L Nuevo", "cantidad": 2},
+        {"nombre_producto": "Dispensador USB", "cantidad": 1},
+    ]
+    precios = ctx["precios"]
+    total = sum(precios[item["nombre_producto"]] * item["cantidad"] for item in esperado)
+    v.check(_pregunta_capacidad(respuestas[1]), "'quiero 5 bidones' pregunta la capacidad")
+    v.check(_pregunta_capacidad(respuestas[2]), "'3 recarga y 2 nuevos' sin capacidad: la vuelve a preguntar")
+    v.check(CLIENTE["direccion"] in respuestas[3], "'20' completa los bidones y pasa a la dirección")
+    v.check("Dispensador Básico" in respuestas[6] and "Dispensador USB" in respuestas[6], "'dispensador' pregunta cuál")
+    resumen = respuestas[-1]
+    v.check(_es_resumen(resumen), "llega al resumen")
+    v.check(
+        all(f"{item['cantidad']}x {item['nombre_producto']}" in resumen for item in esperado)
+        and "12L" not in resumen,
+        "resumen con 3x 20L Recarga, 2x 20L Nuevo y 1x Dispensador USB (nada de 12L)",
+    )
+    v.check(f"Total: {_clp(total)}" in resumen, f"total correcto ({_clp(total)})")
+    respuestas += await _conversar(phone, ["no", "cancelar"])
+    v.check(respuestas[-2] == MENSAJE_NO_CONFIRMADO, "'no' ante '¿Confirmas?' pregunta qué cambiar")
+    v.check(respuestas[-1] == MENSAJE_PEDIDO_CANCELADO and get_draft(phone) is None, "'cancelar' cancela")
+    v.check(not await _pedidos_de(ctx["cliente_id"]), "no se creó pedido")
+
+
 CASOS = [
     ("a", "Mismo wamid entregado 3 veces: se procesa y responde una sola vez; orden por teléfono", caso_a),
     ("b", "'4 bidones de 20' + '2 recargas y 2 nuevos': dos líneas y avanza a la dirección", caso_b),
@@ -592,6 +742,10 @@ CASOS = [
     ("i", "Draft con menos productos de los pedidos: no muestra el resumen", caso_i),
     ("j", "Detección determinista de cancelación y variantes; '2 recargas' de 4 no avanza", caso_j),
     ("k", "Índice único de wamid: la violación es 'duplicado' (200, sin procesar ni responder)", caso_k),
+    ("l", "'quiero 5 bidones' pregunta la capacidad y no asume ninguna", caso_l),
+    ("m", "'dispensador' sin modelo pregunta cuál, con precios; nunca elige uno", caso_m),
+    ("n", "Producto fuera del catálogo: se avisa, no se descarta en silencio ni avanza", caso_n),
+    ("o", "Conversación real completa de la 2da prueba: capacidad y dispensador elegidos", caso_o),
 ]
 
 
