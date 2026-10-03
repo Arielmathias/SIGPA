@@ -1,0 +1,31 @@
+{
+  "_nota": "BORRADOR NO FUNCIONAL. No es un workflow importable de n8n; es un esqueleto de referencia para EP-04 (optimización de rutas).",
+  "name": "SIGPA - Optimización de rutas (placeholder)",
+  "active": false,
+  "nodes": [
+    {
+      "name": "Cron diario",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "parameters": {
+        "rule": "diario",
+        "hora": "TODO: definir horario (America/Santiago)"
+      }
+    },
+    {
+      "name": "Planificar rutas (backend)",
+      "type": "n8n-nodes-base.httpRequest",
+      "disabled": true,
+      "parameters": {
+        "method": "POST",
+        "url": "{{SIGPA_BACKEND_URL}}/rutas/planificar",
+        "headers": {
+          "TODO-header-secreto": "{{SIGPA_INTERNAL_SECRET}}"
+        }
+      },
+      "notes": "TODO: el endpoint /rutas/planificar aún NO existe en el backend FastAPI. El nombre del header del secreto compartido se define al construirlo (patrón X-Cron-Secret). n8n no llama a OpenRouteService ni a Supabase directo si esa lógica vive en el backend."
+    }
+  ],
+  "connections": {
+    "Cron diario": ["Planificar rutas (backend)"]
+  }
+}

@@ -1,0 +1,36 @@
+# Entorno local de n8n para SIGPA.
+# n8n solo orquesta: dispara procesos y llama a endpoints REST del backend
+# FastAPI. No se conecta directo a Supabase.
+#
+# Uso: cp .env.example .env  (completar valores)  ->  docker compose up -d
+
+services:
+  n8n:
+    image: n8nio/n8n:latest
+    container_name: sigpa-n8n
+    restart: unless-stopped
+    ports:
+      - "5678:5678"
+    # URL del backend, secreto compartido y API key de ORS vienen solo
+    # del .env (nunca hardcodeadas aquí).
+    env_file: .env
+    environment:
+      # Huso horario de Chile: lo usan los nodos Cron/Schedule de n8n.
+      # Debe calzar con el manejo de hora de Chile del resto del proyecto.
+      - GENERIC_TIMEZONE=America/Santiago
+      - TZ=America/Santiago
+      # Permite leer SIGPA_BACKEND_URL y demás con {{ $env.X }} en los nodos.
+      - N8N_BLOCK_ENV_ACCESS_IN_NODE=false
+      - N8N_DIAGNOSTICS_ENABLED=false
+    volumes:
+      - n8n_data:/home/node/.n8n
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://localhost:5678/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+
+volumes:
+  n8n_data:
+    name: sigpa_n8n_data
