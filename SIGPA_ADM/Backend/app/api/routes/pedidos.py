@@ -27,12 +27,17 @@ from app.services.auditoria_service import construir_snapshot, registrar_auditor
 
 router = APIRouter(tags=["pedidos"], dependencies=[Depends(get_current_user)])
 
+def _nombre_completo_cliente(cliente: Cliente) -> str:
+    apellidos = " ".join(
+        parte for parte in (cliente.apellido_paterno, cliente.apellido_materno) if parte
+    )
+    return f"{cliente.nombre} {apellidos}" if apellidos else cliente.nombre
 
 def _pedido_a_out(pedido: Pedido) -> PedidoOut:
     return PedidoOut(
         id=pedido.id,
         cliente_id=pedido.cliente_id,
-        cliente_nombre=pedido.cliente.nombre if pedido.cliente else None,
+        cliente_nombre=_nombre_completo_cliente(pedido.cliente) if pedido.cliente else None,
         cliente_telefono=pedido.cliente.telefono if pedido.cliente else None,
         comuna_nombre=(
             pedido.cliente.sector.comuna.nombre
