@@ -1,10 +1,11 @@
 {
+  "id": "SigpaRutasEP0401",
   "name": "SIGPA - Optimización de rutas",
   "nodes": [
     {
       "parameters": {
         "httpMethod": "POST",
-        "path": "optimizacion-rutas",
+        "path": "sigpa-ruta",
         "authentication": "headerAuth",
         "responseMode": "responseNode",
         "options": {}
@@ -631,7 +632,7 @@
               }
             ]
           },
-          "webhookUrl": "http://localhost:5678/webhook/optimizacion-rutas",
+          "webhookUrl": "http://localhost:5678/webhook/sigpa-ruta",
           "executionMode": "test"
         }
       }

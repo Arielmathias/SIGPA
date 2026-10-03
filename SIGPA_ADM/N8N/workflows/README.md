@@ -31,4 +31,5 @@ Para que queden versionados en git, cada workflow se exporta como JSON a esta ca
   docker compose exec n8n n8n import:workflow --input=/tmp/optimizacion-rutas.json
   ```
 
-`optimizacion-rutas.placeholder.json` es solo un borrador legible: **no** se puede importar.
+Al importar, las credenciales quedan referenciadas por nombre pero sin valor: hay que asignarlas
+en cada nodo que las usa (ver el README de la carpeta `N8N/`).

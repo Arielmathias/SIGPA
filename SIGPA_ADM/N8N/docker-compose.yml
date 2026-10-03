@@ -19,7 +19,7 @@ services:
       # Debe calzar con el manejo de hora de Chile del resto del proyecto.
       - GENERIC_TIMEZONE=America/Santiago
       - TZ=America/Santiago
-      # Permite leer SIGPA_ROUTE_WEBHOOK_SECRET y demás con {{ $env.X }} en los nodos.
+      # Permite usar {{ $env.X }} en los nodos (variables del .env).
       - N8N_BLOCK_ENV_ACCESS_IN_NODE=false
       - N8N_DIAGNOSTICS_ENABLED=false
     volumes:
