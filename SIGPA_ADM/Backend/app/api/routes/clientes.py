@@ -1,5 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy import select
+from sqlalchemy import or_,select
 from sqlalchemy.orm import selectinload
 
 from app.core.database import SessionLocal
@@ -14,6 +14,8 @@ def _cliente_a_out(cliente: Cliente) -> ClienteOut:
     return ClienteOut(
         id=cliente.id,
         nombre=cliente.nombre,
+        apellido_paterno=cliente.apellido_paterno,
+        apellido_materno=cliente.apellido_materno,
         telefono=cliente.telefono,
         direccion=cliente.direccion,
         sector_id=cliente.sector_id,
@@ -35,7 +37,13 @@ async def listar_clientes(
         query = select(Cliente).options(selectinload(Cliente.tipo_cliente))
 
         if nombre is not None:
-            query = query.where(Cliente.nombre.ilike(f"%{nombre}%"))
+            query = query.where(
+                or_(
+                    Cliente.nombre.ilike(f"%{nombre}%"),
+                    Cliente.apellido_paterno.ilike(f"%{nombre}%"),
+                    Cliente.apellido_materno.ilike(f"%{nombre}%"),
+                )
+            )
         if telefono is not None:
             query = query.where(Cliente.telefono.ilike(f"%{telefono}%"))
 

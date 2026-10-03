@@ -17,6 +17,8 @@ class Cliente(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     cod_legado: Mapped[str | None] = mapped_column(String(10), nullable=True)
     nombre: Mapped[str] = mapped_column(String(150), nullable=False)
+    apellido_paterno: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    apellido_materno: Mapped[str | None] = mapped_column(String(100), nullable=True)
     telefono: Mapped[str | None] = mapped_column(String(30), nullable=True)
     direccion: Mapped[str | None] = mapped_column(String(255), nullable=True)
     sector_id: Mapped[int | None] = mapped_column(ForeignKey("sector.id"), nullable=True)

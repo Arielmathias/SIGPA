@@ -9,6 +9,8 @@ class ClienteOut(BaseModel):
 
     id: int
     nombre: str
+    apellido_paterno: str | None = None
+    apellido_materno: str | None = None
     telefono: str | None = None
     direccion: str | None = None
     sector_id: int | None = None
@@ -34,6 +36,8 @@ class ClienteDetalleOut(ClienteOut):
 
 class ClienteCreate(BaseModel):
     nombre: str
+    apellido_paterno: str | None = None
+    apellido_materno: str | None = None
     telefono: str
     direccion: str | None = None
     sector_id: int | None = None
@@ -46,6 +50,8 @@ class ClienteCreate(BaseModel):
 
 class ClienteUpdate(BaseModel):
     nombre: str | None = None
+    apellido_paterno: str | None = None
+    apellido_materno: str | None = None
     telefono: str | None = None
     direccion: str | None = None
     sector_id: int | None = None
