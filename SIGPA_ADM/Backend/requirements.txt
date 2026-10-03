@@ -8,3 +8,4 @@ httpx
 openai
 tzdata
 pyjwt[crypto]
+greenlet
