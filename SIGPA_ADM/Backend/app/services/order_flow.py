@@ -131,7 +131,15 @@ PREFIJO_REPETIR_RESUMEN = "Antes de confirmar, revisemos tu pedido una vez más.
 
 PREGUNTA_OPCIONES_PEDIDO = "¿Quieres cambiar algo, confirmar el pedido o cancelarlo?"
 
+MENSAJE_CORRECCION_APLICADA = "Listo, hice el cambio."
+
+MENSAJE_CORRECCION_RECHAZADA = (
+    "Entendido, lo dejo como está. ¿Qué quieres cambiar, o prefieres confirmar o cancelar el pedido?"
+)
+
 MENSAJE_DUDA_GENERICA = "Perdón por la confusión. Tengo anotado en tu pedido: {pedido}."
+
+MENSAJE_DUDA_SIN_PRODUCTOS = "Perdón por la confusión."
 
 MENSAJE_PRODUCTOS_NO_REGISTRADOS = (
     "Antes de mostrarte el resumen, revisemos tu pedido: tengo anotado {registrados}, "
@@ -381,6 +389,18 @@ def _menciona_algun_producto(texto_normalizado: str) -> bool:
 _PATRON_TEMA_PEDIDO = re.compile(
     r"\b(pedido\w*|total|cobr\w*|asum\w*|supus\w*|entreg\w*|despach\w*|resumen|envio)\b"
 )
+
+
+_PATRON_RECLAMO = re.compile(
+    r"\b(por que|porque|asum\w*|supus\w*|error\w*|equivoc\w*|no (te )?(pedi|dije)|reclam\w*|mal)\b"
+)
+
+
+def _es_pregunta_o_reclamo(mensaje: str | None) -> bool:
+    """El mensaje pregunta o reclama ("¿por qué asumes...?", "eso está
+    mal"), a diferencia de una respuesta ("2 recargas y 2 nuevos"), que no
+    es una duda aunque hable de productos."""
+    return "?" in (mensaje or "") or bool(_PATRON_RECLAMO.search(_normalizar_texto(mensaje)))
 
 
 def _habla_del_pedido(texto_normalizado: str) -> bool:
@@ -1085,6 +1105,133 @@ def _productos_no_registrados(draft: dict) -> dict[str, int]:
     }
 
 
+# --------------------------------------------------------------------------
+# Corrección propuesta por el bot ("¿Quieres que los cambie todos a 20L?")
+#
+# Cuando el bot ofrece corregir algo del pedido, el LLM devuelve también la
+# corrección como dato (correccion_propuesta). El código la valida contra el
+# catálogo y la guarda en el draft; si el cliente responde "sí" al mensaje
+# siguiente, se aplica y se muestra el resumen nuevo (nunca se confirma el
+# pedido en el mismo turno). Cualquier otro mensaje la descarta.
+# --------------------------------------------------------------------------
+
+# Atributos que se reemplazan según lo que cambia la corrección.
+_DIMENSIONES_CORRECCION = {
+    "capacidad": lambda atributo: re.fullmatch(r"\d+l", atributo) is not None,
+    "variante": lambda atributo: atributo in ("nuevo", "recarga"),
+    "modelo": lambda atributo: atributo in ("usb", "basico"),
+}
+
+
+def _valor_atributo(atributo: str, valor) -> str | None:
+    """Valor nuevo de la corrección como atributo de catálogo: "20" / "20L"
+    → "20l"; "Nuevos" → "nuevo"; "USB" → "usb"."""
+    texto = _normalizar_texto(str(valor if valor is not None else ""))
+    if atributo == "capacidad":
+        numero = re.fullmatch(r"(\d+)\s*(l|lt|lts|litros?)?", texto)
+        return f"{numero.group(1)}l" if numero else None
+    return _atributo_de(texto) if texto else None
+
+
+def _validar_correccion(propuesta: dict | None, productos: list[dict], catalogo: list[dict]) -> dict | None:
+    """Corrección propuesta por el LLM, validada contra el draft y el
+    catálogo de la BD: cada línea afectada debe estar en el pedido y el
+    producto resultante debe existir (exactamente uno). Devuelve {"cambios":
+    [{"desde", "hacia", "cantidad": unidades a cambiar o None = todas}],
+    "pide_cantidad": bool} o None si no es válida (y entonces no se ofrece)."""
+    if not isinstance(propuesta, dict):
+        return None
+    atributo = propuesta.get("atributo")
+    actuales = propuesta.get("productos_actuales") or []
+    alcance = propuesta.get("alcance") or "todas"
+    en_pedido = {p.get("nombre_producto"): _cantidad_valida(p.get("cantidad")) for p in productos}
+    if not isinstance(actuales, list) or not actuales or any(a not in en_pedido for a in actuales):
+        return None
+
+    if atributo == "cantidad":
+        nueva = _cantidad_valida(propuesta.get("valor_nuevo"))
+        if len(actuales) != 1 or nueva < 1 or nueva == en_pedido[actuales[0]]:
+            return None
+        return {"cambios": [{"desde": actuales[0], "hacia": actuales[0], "cantidad_nueva": nueva}], "pide_cantidad": False}
+
+    es_de_la_dimension = _DIMENSIONES_CORRECCION.get(atributo)
+    valor = _valor_atributo(atributo, propuesta.get("valor_nuevo")) if es_de_la_dimension else None
+    if not valor:
+        return None
+    cambios = []
+    for actual in actuales:
+        atributos = {a for a in _atributos(actual) if not es_de_la_dimension(a)} | {valor}
+        candidatos = [
+            p["nombre"] for p in catalogo
+            if _familia(p["nombre"]) == _familia(actual) and set(_atributos(p["nombre"])) == atributos
+        ]
+        if len(candidatos) != 1 or candidatos[0] == actual:
+            return None
+        cambios.append({"desde": actual, "hacia": candidatos[0], "cantidad": None})
+
+    if alcance == "algunas":
+        return {"cambios": cambios, "pide_cantidad": True}
+    if alcance != "todas":
+        unidades = _cantidad_valida(alcance)
+        if len(cambios) != 1 or not 1 <= unidades <= en_pedido[cambios[0]["desde"]]:
+            return None
+        cambios[0]["cantidad"] = unidades
+    return {"cambios": cambios, "pide_cantidad": False}
+
+
+def _pregunta_correccion(correccion: dict, productos: list[dict]) -> str:
+    en_pedido = {p.get("nombre_producto"): _cantidad_valida(p.get("cantidad")) for p in productos}
+    cambios = correccion["cambios"]
+    if "cantidad_nueva" in cambios[0]:
+        cambio = cambios[0]
+        return f"¿Quieres que deje {cambio['cantidad_nueva']}x {cambio['desde']}?"
+    if correccion["pide_cantidad"]:
+        opciones = ", ".join(f"{en_pedido[c['desde']]}x {c['desde']} → {c['hacia']}" for c in cambios)
+        return f"¿Cuántas unidades quieres cambiar? Tienes: {opciones}. Dime cuántas, o responde TODAS."
+    detalle = " y ".join(
+        f"{c['cantidad'] or en_pedido[c['desde']]}x {c['desde']} por {c['hacia']}" for c in cambios
+    )
+    return f"¿Quieres que cambie {detalle}?"
+
+
+def _aplicar_cambios_correccion(productos: list[dict], correccion: dict) -> list[dict]:
+    resultado = [dict(item) for item in productos]
+    for cambio in correccion["cambios"]:
+        indice = next((i for i, p in enumerate(resultado) if p.get("nombre_producto") == cambio["desde"]), None)
+        if indice is None:
+            continue
+        actual = _cantidad_valida(resultado[indice].get("cantidad"))
+        if "cantidad_nueva" in cambio:
+            resultado[indice]["cantidad"] = cambio["cantidad_nueva"]
+            continue
+        unidades = min(cambio["cantidad"] or actual, actual)
+        if unidades == actual:
+            resultado.pop(indice)
+        else:
+            resultado[indice]["cantidad"] = actual - unidades
+        _sumar_linea(resultado, cambio["hacia"], unidades)
+    return resultado
+
+
+def _unidades_respuesta(texto: str | None) -> int | str | None:
+    """Respuesta a "¿cuántas unidades quieres cambiar?": "todas" o un número."""
+    tokens = _normalizar_texto(texto).split()
+    if any(t in ("todas", "todos", "toda", "todo") for t in tokens):
+        return "todas"
+    for token in tokens:
+        if token.isdigit():
+            return int(token)
+        if token in _NUMEROS_TEXTO:
+            return _NUMEROS_TEXTO[token]
+    return None
+
+
+def _sin_pregunta_final(texto: str | None) -> str:
+    """Quita la última pregunta del texto del LLM (la reemplaza la pregunta
+    armada en código desde la corrección validada)."""
+    return re.sub(r"\s*¿[^¿]*\?\s*$", "", texto or "").strip()
+
+
 async def _catalogo() -> list[dict]:
     """Catálogo vigente desde la BD: [{"nombre", "precio"}]."""
     async with SessionLocal() as session:
@@ -1464,11 +1611,15 @@ async def _aplicar_resultado_llm(
     # productos que nombra son de lo que se queja, no un pedido nuevo.
     hay_pedido_previo = bool(productos_previos or aclaracion_previa or draft_previo.get("pendientes_modelo"))
     respuesta_duda = None
-    es_duda = hay_pedido_previo and (
-        intencion == "duda_pedido" or (intencion == "fuera_de_alcance" and _habla_del_pedido(texto))
+    es_duda = (
+        hay_pedido_previo
+        and _es_pregunta_o_reclamo(mensaje)
+        and (intencion == "duda_pedido" or (intencion == "fuera_de_alcance" and _habla_del_pedido(texto)))
     )
+    propuesta_llm = None
     if es_duda:
         respuesta_duda = respuesta_llm if intencion == "duda_pedido" else None
+        propuesta_llm = resultado.get("correccion_propuesta") if intencion == "duda_pedido" else None
         intencion = "duda_pedido"
         resultado = {"intencion": intencion}
         extraidos, aclaracion_llm, respuesta_llm, mensaje, texto = [], None, None, None, ""
@@ -1649,13 +1800,33 @@ async def _aplicar_resultado_llm(
     # opciones, y el pedido pasa a esperando_modificacion para que un "sí"
     # suelto no lo confirme (solo se confirma justo después del resumen).
     siguiente = PREGUNTA_OPCIONES_PEDIDO if paso == "confirmacion" else texto
+    correccion = None
     if es_duda:
-        respuesta = respuesta_duda or MENSAJE_DUDA_GENERICA.format(pedido=_resumen_productos_corto(productos))
-        texto = f"{respuesta}\n\n{siguiente}"
+        correccion = _validar_correccion(propuesta_llm, productos, catalogo)
+        if correccion:
+            # La pregunta final la arma el código desde la corrección validada,
+            # para que un "sí" responda exactamente a lo que quedó guardado.
+            explicacion = _sin_pregunta_final(respuesta_duda)
+            texto = f"{explicacion}\n\n{_pregunta_correccion(correccion, productos)}".strip()
+        else:
+            if propuesta_llm:
+                # El LLM ofreció algo que no existe en el catálogo (o no calza
+                # con el pedido): no se ofrece.
+                logger.info("[order_flow] Corrección propuesta descartada: %s", propuesta_llm)
+                respuesta_duda = None
+            respuesta = respuesta_duda or (
+                MENSAJE_DUDA_GENERICA.format(pedido=_resumen_productos_corto(productos))
+                if productos
+                else MENSAJE_DUDA_SIN_PRODUCTOS
+            )
+            texto = f"{respuesta}\n\n{siguiente}"
     elif (
         intencion in _INTENCIONES_RESPUESTA_LLM
         and resultado.get("respuesta_sugerida")
-        and not (intencion == "fuera_de_alcance" and hay_pendientes)
+        # Si el cliente pidió algo que el código resolvió, agregó, dejó
+        # pendiente o no encontró en el catálogo, el "fuera de alcance" del
+        # LLM es un error: va la respuesta del código.
+        and not (intencion == "fuera_de_alcance" and (hay_pendientes or lineas_codigo or familias_resueltas))
     ):
         # Consulta de precio/pedidos o tema fuera de alcance: se responde lo
         # que preguntó y, si hay un pedido en curso, se retoma el paso
@@ -1676,6 +1847,9 @@ async def _aplicar_resultado_llm(
 
     if paso == "confirmacion" and "Resumen de tu pedido" not in texto:
         save_draft(phone, {**(get_draft(phone) or nuevo_draft), "estado": ESTADO_ESPERANDO_MODIFICACION})
+    if correccion:
+        # Válida solo para el mensaje siguiente (ver procesar_mensaje).
+        save_draft(phone, {**(get_draft(phone) or nuevo_draft), "correccion_pendiente": correccion})
 
     if es_primer_turno:
         texto = f"{_saludo(cliente)} {_quitar_saludo_inicial(texto)}"
@@ -1861,6 +2035,38 @@ async def _confirmar_pedido(phone: str, draft: dict | None) -> str:
     )
 
 
+async def _responder_a_correccion(
+    phone: str, draft: dict, cliente: dict | None, correccion: dict, mensaje: str | None
+) -> str | None:
+    """Respuesta del cliente a una corrección ofrecida por el bot. Devuelve
+    el texto a enviar, o None si el mensaje no responde la pregunta (la
+    corrección ya quedó descartada y el mensaje sigue el flujo normal)."""
+    if correccion.get("pide_cantidad"):
+        unidades = _unidades_respuesta(mensaje)
+        if unidades == "todas":
+            correccion = {**correccion, "pide_cantidad": False}
+        elif unidades is not None and len(correccion["cambios"]) == 1:
+            correccion = {
+                "cambios": [{**correccion["cambios"][0], "cantidad": unidades}],
+                "pide_cantidad": False,
+            }
+        else:
+            return None
+    elif _es_negativa_simple(mensaje):
+        save_draft(phone, {**draft, "estado": ESTADO_ESPERANDO_MODIFICACION})
+        return MENSAJE_CORRECCION_RECHAZADA
+    elif not _es_confirmacion_explicita(mensaje):
+        return None
+
+    productos = _aplicar_cambios_correccion(draft.get("productos") or [], correccion)
+    nuevo = {**draft, "productos": productos}
+    # Cambio pedido explícitamente: lo pedido pasa a ser lo que quedó.
+    nuevo["unidades_pedidas"] = _unidades_draft(nuevo)
+    paso, texto = await _responder_siguiente_paso(phone, nuevo, cliente)
+    logger.info("[order_flow] Corrección aplicada para phone=%s: %s", phone, correccion["cambios"])
+    return f"{MENSAJE_CORRECCION_APLICADA}\n\n{texto}"
+
+
 async def _es_cliente_nuevo(phone: str) -> bool:
     return not await _buscar_clientes(phone)
 
@@ -1904,6 +2110,19 @@ async def procesar_mensaje(
                     # Tras esta pregunta un "sí" no debe confirmar el pedido.
                     save_draft(phone, {**draft, "estado": ESTADO_ESPERANDO_MODIFICACION})
                 return PREGUNTA_CANCELAR
+
+        # Corrección que el bot ofreció en su último mensaje ("¿Quieres que
+        # cambie ... por Bidón 20L ...?"): vale solo para este mensaje. Se
+        # aplica con un sí explícito (o con la cantidad, si se preguntó
+        # cuántas), "no" la descarta y pregunta qué cambiar, y cualquier otra
+        # cosa la descarta y sigue el flujo normal.
+        correccion = draft.pop("correccion_pendiente", None) if draft else None
+        if correccion:
+            save_draft(phone, draft)
+            if message_type == "text":
+                respuesta = await _responder_a_correccion(phone, draft, cliente, correccion, message_text)
+                if respuesta is not None:
+                    return respuesta
 
         if message_type == "location":
             return await _aplicar_ubicacion(phone, location, draft, cliente)

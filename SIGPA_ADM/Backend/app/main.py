@@ -1,3 +1,5 @@
+import os
+
 from fastapi import FastAPI
 
 from app.api.routes import clientes, internal, pedidos, productos, whatsapp
@@ -14,4 +16,6 @@ app.include_router(internal.router)
 
 @app.get("/health")
 async def health():
-    return {"status": "ok"}
+    # RENDER_GIT_COMMIT lo define Render en cada deploy: sirve para saber
+    # qué commit está corriendo. Es la única variable de entorno expuesta.
+    return {"status": "ok", "commit": os.environ.get("RENDER_GIT_COMMIT") or "desconocido"}

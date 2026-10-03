@@ -28,6 +28,7 @@ Uso: python -m scripts.test_conversacion_real_0310
 
 import asyncio
 import logging
+import os
 import random
 import time
 import uuid
@@ -48,6 +49,7 @@ from app.services.mensaje_whatsapp_service import (
 )
 from app.services.draft_store import clear_draft, get_draft, save_draft
 from app.services.order_flow import (
+    MENSAJE_CORRECCION_RECHAZADA,
     MENSAJE_NO_CONFIRMADO,
     MENSAJE_PEDIDO_CANCELADO,
     PREFIJO_REPETIR_RESUMEN,
@@ -781,7 +783,10 @@ async def caso_q(ctx: dict, v: Verificador) -> None:
     draft = get_draft(phone) or {}
     v.check(not _es_rechazo(texto), "no responde 'fuera de alcance'")
     v.check("Resumen de tu pedido" not in texto, "no repite el resumen pegado a la respuesta")
-    v.check(PREGUNTA_OPCIONES_PEDIDO in texto, "ofrece cambiar, confirmar o cancelar")
+    v.check(
+        PREGUNTA_OPCIONES_PEDIDO in texto or (bool(draft.get("correccion_pendiente")) and "20L" in texto),
+        "ofrece corregir (cambiar a 20L) o las opciones cambiar/confirmar/cancelar",
+    )
     v.check(draft.get("estado") == "esperando_modificacion", "pasa a esperando_modificacion")
     v.check(
         draft.get("productos") == LINEAS_12L and not draft.get("aclaracion_pendiente"),
@@ -826,6 +831,197 @@ async def caso_r(ctx: dict, v: Verificador) -> None:
     clear_draft(phone)
 
 
+# --------------------------------------------------------------------------
+# Corrección propuesta estructurada y /health con el commit.
+# --------------------------------------------------------------------------
+
+LINEAS_20L = [
+    {"nombre_producto": "Bidón 20L Recarga", "cantidad": 2},
+    {"nombre_producto": "Bidón 20L Nuevo", "cantidad": 1},
+]
+
+
+def _sin_orden(lineas: list[dict]) -> list[tuple]:
+    return sorted((item["nombre_producto"], item["cantidad"]) for item in lineas)
+
+
+async def _duda_simulada(ctx: dict, propuesta: dict | None, respuesta: str) -> str:
+    """Resumen con 12L y una duda cuya interpretación del LLM se simula
+    (determinista), con la corrección propuesta dada."""
+    phone = CLIENTE["telefono"]
+    await _preparar_resumen(ctx, LINEAS_12L)
+    cliente = _datos_cliente(await _cliente_orm(ctx["cliente_id"]))
+    resultado = {
+        "intencion": "duda_pedido",
+        "productos": [],
+        "correccion_propuesta": propuesta,
+        "respuesta_sugerida": respuesta,
+    }
+    texto = await _aplicar_resultado_llm(
+        phone, resultado, get_draft(phone), cliente, "porque asumes que quiero bidones de 12?"
+    )
+    print(f"  [LLM simulado] Bot: {texto}")
+    return texto
+
+
+async def caso_s(ctx: dict, v: Verificador) -> None:
+    phone = CLIENTE["telefono"]
+    await _preparar_resumen(ctx, LINEAS_12L)
+    respuestas = await _conversar(phone, ["porque asumes que quiero bidones de 12?"])
+    v.check("20L" in respuestas[0] and "?" in respuestas[0], "ofrece cambiar a 20L")
+    v.check(bool((get_draft(phone) or {}).get("correccion_pendiente")), "la corrección queda guardada como pendiente")
+    respuestas += await _conversar(phone, ["si"])
+    draft = get_draft(phone) or {}
+    precios = ctx["precios"]
+    total = sum(precios[item["nombre_producto"]] * item["cantidad"] for item in LINEAS_20L)
+    v.check(_sin_orden(draft.get("productos") or []) == _sin_orden(LINEAS_20L), "el draft queda con 2x 20L Recarga y 1x 20L Nuevo")
+    v.check(
+        _es_resumen(respuestas[1])
+        and all(f"{i['cantidad']}x {i['nombre_producto']}" in respuestas[1] for i in LINEAS_20L)
+        and "12L" not in respuestas[1],
+        "muestra el resumen nuevo, sin 12L",
+    )
+    v.check(f"Total: {_clp(total)}" in respuestas[1], f"con precios y total recalculados ({_clp(total)})")
+    v.check(draft.get("estado") == "esperando_confirmacion", "pide confirmación explícita")
+    v.check(not draft.get("correccion_pendiente"), "la corrección ya no está pendiente")
+    v.check(not await _pedidos_de(ctx["cliente_id"]), "el pedido NO se confirma en ese turno")
+    clear_draft(phone)
+
+
+async def caso_t(ctx: dict, v: Verificador) -> None:
+    phone = CLIENTE["telefono"]
+    await _preparar_resumen(ctx, LINEAS_12L)
+    respuestas = await _conversar(phone, ["porque asumes que quiero bidones de 12?", "no"])
+    draft = get_draft(phone) or {}
+    v.check(bool(respuestas[0]) and "20L" in respuestas[0], "ofrece cambiar a 20L")
+    v.check(respuestas[1] == MENSAJE_CORRECCION_RECHAZADA, "'no' pregunta qué quiere cambiar")
+    v.check(draft.get("productos") == LINEAS_12L, "el pedido no cambia")
+    v.check(not draft.get("correccion_pendiente") and draft.get("estado") == "esperando_modificacion", "descarta la propuesta")
+    v.check(not await _pedidos_de(ctx["cliente_id"]), "no se confirma nada")
+    clear_draft(phone)
+
+
+async def caso_u(ctx: dict, v: Verificador) -> None:
+    phone = CLIENTE["telefono"]
+    await _preparar_resumen(ctx, LINEAS_12L)
+    respuestas = await _conversar(phone, ["no", "si"])
+    draft = get_draft(phone) or {}
+    v.check(not draft.get("correccion_pendiente"), "no había corrección pendiente")
+    v.check(
+        respuestas[1].startswith(PREFIJO_REPETIR_RESUMEN) and _es_resumen(respuestas[1]),
+        "'si' sin propuesta vuelve a mostrar el resumen",
+    )
+    v.check(draft.get("productos") == LINEAS_12L, "sin cambios en el pedido")
+    v.check(
+        draft.get("estado") == "esperando_confirmacion" and not await _pedidos_de(ctx["cliente_id"]),
+        "y exige confirmación explícita (no confirma)",
+    )
+    clear_draft(phone)
+
+
+async def caso_v(ctx: dict, v: Verificador) -> None:
+    phone = CLIENTE["telefono"]
+    propuesta = {
+        "productos_actuales": ["Bidón 12L Recarga", "Bidón 12L Nuevo"],
+        "atributo": "capacidad",
+        "valor_nuevo": "20",
+        "alcance": "algunas",
+    }
+    texto = await _duda_simulada(ctx, propuesta, "Tienes razón. ¿Te gustaría cambiar alguno de ellos a 20L?")
+    v.check("Cuántas unidades" in texto, "'alguno de ellos': pregunta cuántas unidades")
+    v.check((get_draft(phone) or {}).get("productos") == LINEAS_12L, "no cambia nada todavía")
+    respuestas = await _conversar(phone, ["todas"])
+    v.check(
+        _sin_orden((get_draft(phone) or {}).get("productos") or []) == _sin_orden(LINEAS_20L) and _es_resumen(respuestas[0]),
+        "'todas' aplica el cambio y muestra el resumen",
+    )
+    clear_draft(phone)
+
+    # Una sola línea, "algunas" y luego "1": cambia solo 1 unidad.
+    propuesta = {**propuesta, "productos_actuales": ["Bidón 12L Recarga"]}
+    await _duda_simulada(ctx, propuesta, "Tienes razón. ¿Te gustaría cambiar alguno a 20L?")
+    await _conversar(phone, ["1"])
+    esperado = [
+        {"nombre_producto": "Bidón 12L Recarga", "cantidad": 1},
+        {"nombre_producto": "Bidón 12L Nuevo", "cantidad": 1},
+        {"nombre_producto": "Bidón 20L Recarga", "cantidad": 1},
+    ]
+    v.check(_sin_orden((get_draft(phone) or {}).get("productos") or []) == _sin_orden(esperado), "'1' cambia solo una unidad")
+    v.check(not await _pedidos_de(ctx["cliente_id"]), "no se confirma nada")
+    clear_draft(phone)
+
+
+async def caso_w(ctx: dict, v: Verificador) -> None:
+    phone = CLIENTE["telefono"]
+    propuesta = {
+        "productos_actuales": ["Bidón 12L Recarga", "Bidón 12L Nuevo"],
+        "atributo": "capacidad",
+        "valor_nuevo": "5",
+        "alcance": "todas",
+    }
+    texto = await _duda_simulada(ctx, propuesta, "Tienes razón. ¿Quieres que los cambie a 5L?")
+    draft = get_draft(phone) or {}
+    v.check("5L" not in texto, "la propuesta inválida (Bidón 5L no existe) no se ofrece")
+    v.check(not draft.get("correccion_pendiente"), "ni queda guardada")
+    v.check(PREGUNTA_OPCIONES_PEDIDO in texto and not _es_rechazo(texto), "responde la duda y ofrece las opciones")
+    respuestas = await _conversar(phone, ["si"])
+    v.check(
+        (get_draft(phone) or {}).get("productos") == LINEAS_12L and _es_resumen(respuestas[0]),
+        "un 'si' después no cambia nada: vuelve al resumen",
+    )
+    clear_draft(phone)
+
+    # Producto que no está en el pedido: también se descarta.
+    propuesta = {**propuesta, "productos_actuales": ["Dispensador USB"], "atributo": "modelo", "valor_nuevo": "Básico"}
+    await _duda_simulada(ctx, propuesta, "¿Quieres cambiar el dispensador?")
+    v.check(not (get_draft(phone) or {}).get("correccion_pendiente"), "una línea que no está en el pedido se descarta")
+    clear_draft(phone)
+
+
+async def caso_y(ctx: dict, v: Verificador) -> None:
+    """Regresión: si el LLM marca fuera de alcance una RESPUESTA a la
+    pregunta pendiente ("2 recargas y 2 nuevos"), el código la resuelve igual
+    y no la trata como duda ni muestra el rechazo."""
+    phone = CLIENTE["telefono"]
+    cliente = _datos_cliente(await _cliente_orm(ctx["cliente_id"]))
+    draft_previo = {
+        "intencion": "pedido",
+        "productos": [],
+        "aclaracion_pendiente": {"capacidad_litros": 20, "cantidad": 4},
+        "paso": "producto",
+        "estado": "armando",
+    }
+    resultado = {
+        "intencion": "fuera_de_alcance",
+        "productos": [],
+        "respuesta_sugerida": "Solo puedo ayudar con pedidos de agua de esta distribuidora.",
+    }
+    texto = await _aplicar_resultado_llm(phone, resultado, draft_previo, cliente, "2 recargas y 2 nuevos")
+    print(f"  [LLM simulado: fuera de alcance] Bot: {texto}")
+    draft = get_draft(phone) or {}
+    v.check(draft.get("productos") == LINEAS_BIDONES, "resuelve los 2 recarga + 2 nuevos")
+    v.check(not _es_rechazo(texto) and "Perdón" not in texto, "sin rechazo ni respuesta de duda")
+    v.check(CLIENTE["direccion"] in texto, "avanza a confirmar la dirección")
+    clear_draft(phone)
+
+
+async def caso_x(ctx: dict, v: Verificador) -> None:
+    transport = httpx.ASGITransport(app=app)
+    original = os.environ.pop("RENDER_GIT_COMMIT", None)
+    try:
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            sin = await client.get("/health")
+            os.environ["RENDER_GIT_COMMIT"] = "abc1234def"
+            con = await client.get("/health")
+    finally:
+        os.environ.pop("RENDER_GIT_COMMIT", None)
+        if original is not None:
+            os.environ["RENDER_GIT_COMMIT"] = original
+    print(f"  /health sin variable: {sin.json()} | con variable: {con.json()}")
+    v.check(sin.status_code == 200 and sin.json() == {"status": "ok", "commit": "desconocido"}, "sin RENDER_GIT_COMMIT: commit 'desconocido'")
+    v.check(con.status_code == 200 and con.json() == {"status": "ok", "commit": "abc1234def"}, "con RENDER_GIT_COMMIT: devuelve el commit")
+
+
 CASOS = [
     ("a", "Mismo wamid entregado 3 veces: se procesa y responde una sola vez; orden por teléfono", caso_a),
     ("b", "'4 bidones de 20' + '2 recargas y 2 nuevos': dos líneas y avanza a la dirección", caso_b),
@@ -845,6 +1041,13 @@ CASOS = [
     ("p", "El resumen no muestra la ubicación (las coordenadas se guardan igual)", caso_p),
     ("q", "'¿por qué asumes que quiero bidones de 12?' se responde como duda, no fuera de alcance", caso_q),
     ("r", "'cuánto cuesta una pizza' sí es fuera de alcance, sin el resumen pegado", caso_r),
+    ("s", "Duda por 12L → ofrece 20L → 'si': aplica, recalcula y muestra el resumen sin confirmar", caso_s),
+    ("t", "Misma duda → 'no': el pedido no cambia y pregunta qué cambiar", caso_t),
+    ("u", "'si' sin propuesta pendiente: vuelve al resumen y exige confirmación", caso_u),
+    ("v", "Propuesta 'alguno de ellos': pregunta cuántas unidades", caso_v),
+    ("w", "Propuesta inválida (producto inexistente o fuera del pedido): se descarta", caso_w),
+    ("x", "/health incluye el commit desplegado", caso_x),
+    ("y", "Respuesta a la pregunta pendiente marcada 'fuera de alcance' por el LLM: se resuelve igual", caso_y),
 ]
 
 
