@@ -33,13 +33,13 @@
             {
               "id": "c1",
               "name": "DEPOT_LAT",
-              "value": 0,
+              "value": -33.014677,
               "type": "number"
             },
             {
               "id": "c2",
               "name": "DEPOT_LON",
-              "value": 0,
+              "value": -71.505148,
               "type": "number"
             },
             {
@@ -242,7 +242,7 @@
     },
     {
       "parameters": {
-        "jsCode": "// Junta el resultado de la geocodificación con las paradas que ya tenían coordenadas.\nconst cfg = $('Config').first().json;\nconst base = $('Normalizar').first().json;\nconst pendientes = $('Separar pendientes').all().map((i) => i.json);\nconst respuestas = $input.all();\nconst minConfianza = Number(cfg.CONFIDENCE_MIN);\n\nconst resueltas = [...base.resueltas];\nconst sin_resolver = [...base.sin_resolver];\n\npendientes.forEach((p, i) => {\n  const r = respuestas[i] ? respuestas[i].json : null;\n  if (!r || r.error || !Array.isArray(r.features)) {\n    sin_resolver.push({ pedido_id: p.pedido_id, motivo: 'error de geocodificación' });\n    return;\n  }\n  const f = r.features[0];\n  const coords = f && f.geometry && f.geometry.coordinates;\n  if (!f || !Array.isArray(coords) || coords.length < 2) {\n    sin_resolver.push({ pedido_id: p.pedido_id, motivo: 'dirección no encontrada' });\n    return;\n  }\n  const confianza = Number(f.properties && f.properties.confidence);\n  if (!(confianza >= minConfianza)) {\n    sin_resolver.push({ pedido_id: p.pedido_id, motivo: 'dirección ambigua' });\n    return;\n  }\n  // ORS devuelve [lon, lat].\n  const lon = Number(coords[0]);\n  const lat = Number(coords[1]);\n  if (!(lat >= -90 && lat <= 90 && lon >= -180 && lon <= 180)) {\n    sin_resolver.push({ pedido_id: p.pedido_id, motivo: 'error de geocodificación' });\n    return;\n  }\n  resueltas.push({ pedido_id: p.pedido_id, latitud: lat, longitud: lon });\n});\n\nreturn [{ json: { ids_recibidos: base.ids_recibidos, resueltas, sin_resolver } }];"
+        "jsCode": "// Junta el resultado de la geocodificación con las paradas que ya tenían coordenadas.\nconst cfg = $('Config').first().json;\nconst base = $('Normalizar').first().json;\nconst pendientes = $('Separar pendientes').all().map((i) => i.json);\nconst respuestas = $input.all();\nconst minConfianza = Number(cfg.CONFIDENCE_MIN);\n\nconst resueltas = [...base.resueltas];\nconst sin_resolver = [...base.sin_resolver];\n\npendientes.forEach((p, i) => {\n  const r = respuestas[i] ? respuestas[i].json : null;\n  if (!r || r.error || !Array.isArray(r.features)) {\n    sin_resolver.push({ pedido_id: p.pedido_id, motivo: 'error de geocodificación' });\n    return;\n  }\n  const f = r.features[0];\n  const coords = f && f.geometry && f.geometry.coordinates;\n  if (!f || !Array.isArray(coords) || coords.length < 2) {\n    sin_resolver.push({ pedido_id: p.pedido_id, motivo: 'dirección no encontrada' });\n    return;\n  }\n  const props = f.properties || {};\n  // El confidence de ORS no basta: una dirección inventada puede volver con confidence 1 y\n  // match_type \"exact\" apuntando al centroide de otra calle. Solo se acepta un punto exacto.\n  if (props.layer !== 'address') {\n    sin_resolver.push({ pedido_id: p.pedido_id, motivo: 'dirección no encontrada con precisión suficiente' });\n    return;\n  }\n  const confianza = Number(props.confidence);\n  if (!(confianza >= minConfianza)) {\n    sin_resolver.push({ pedido_id: p.pedido_id, motivo: 'dirección ambigua' });\n    return;\n  }\n  // ORS devuelve [lon, lat].\n  const lon = Number(coords[0]);\n  const lat = Number(coords[1]);\n  if (!(lat >= -90 && lat <= 90 && lon >= -180 && lon <= 180)) {\n    sin_resolver.push({ pedido_id: p.pedido_id, motivo: 'error de geocodificación' });\n    return;\n  }\n  resueltas.push({ pedido_id: p.pedido_id, latitud: lat, longitud: lon });\n});\n\nreturn [{ json: { ids_recibidos: base.ids_recibidos, resueltas, sin_resolver } }];"
       },
       "id": "a1000000-0000-4000-8000-000000000009",
       "name": "Evaluar geocodificación",

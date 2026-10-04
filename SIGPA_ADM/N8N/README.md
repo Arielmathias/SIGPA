@@ -104,9 +104,17 @@ Webhook → Config → Normalizar → ¿Entrada válida? ─no→ 400 entrada_in
 - Las paradas que traen coordenadas se usan tal cual (y se devuelven iguales). Las demás se
   geocodifican de a una, con 1500 ms entre requests (cuota gratuita de ORS), sesgadas hacia el
   depósito y limitadas a `PAIS`.
+- Una dirección geocodificada solo se acepta si el resultado tiene `layer` = `address` **y**
+  `confidence` >= `CONFIDENCE_MIN`. El `confidence` de ORS no basta por sí solo: en pruebas
+  reales, "Pasaje Zxqwyrt 98765, Villa Inexistente" volvió con `confidence` 1 y `match_type`
+  `exact`, pero el punto era el centroide de una calle cualquiera de otra comuna (`layer`
+  `street`, `accuracy` `centroid`). Cualquier otro layer (`street`, `locality`, `region`,
+  `venue`, etc.) se descarta, sea cual sea su `confidence`.
 - Van a `sin_resolver` con motivo `dirección no encontrada` (sin resultado o sin dirección),
-  `dirección ambigua` (`confidence` < `CONFIDENCE_MIN`), `error de geocodificación` (falla la
-  llamada) o `no asignable en la optimización` (ORS no la pudo asignar).
+  `dirección no encontrada con precisión suficiente` (el resultado no es de layer `address`),
+  `dirección ambigua` (layer `address` pero `confidence` < `CONFIDENCE_MIN`),
+  `error de geocodificación` (falla la llamada) o `no asignable en la optimización` (ORS no la
+  pudo asignar).
 - Antes de responder 200 el workflow verifica el mismo contrato que el backend; si algo no
   cuadra responde 502 en vez de una ruta parcial.
 - Un `pedido_id` repetido en la entrada se toma una sola vez.
@@ -132,3 +140,6 @@ Después de importar el workflow en el editor:
 
 El nodo Webhook trae datos de prueba fijados (4 paradas: dos con coordenadas, una real de Viña
 del Mar sin coordenadas y una inventada) para ejecutarlo desde el editor con **Test workflow**.
+La inventada (pedido 104, "Pasaje Zxqwyrt 98765, Villa Inexistente") es el caso de regresión de
+la regla de layer: debe terminar en `sin_resolver` con motivo `dirección no encontrada con
+precisión suficiente`, no en la ruta.
