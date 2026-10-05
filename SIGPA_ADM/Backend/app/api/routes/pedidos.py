@@ -52,6 +52,7 @@ def _pedido_a_out(pedido: Pedido) -> PedidoOut:
         actualizado_en=pedido.actualizado_en,
         latitud=pedido.latitud,
         longitud=pedido.longitud,
+        orden_entrega=pedido.orden_entrega,
     )
 
 

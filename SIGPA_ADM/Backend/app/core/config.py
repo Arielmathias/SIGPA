@@ -28,6 +28,12 @@ class Settings(BaseSettings):
 
     INTERNAL_CRON_SECRET: str = ""
 
+    # Webhook de n8n que geocodifica y optimiza la ruta de reparto (EP-04).
+    # El backend lo llama desde POST /rutas/planificar (ver ruta_service).
+    N8N_ROUTE_WEBHOOK_URL: str = ""
+    N8N_ROUTE_WEBHOOK_SECRET: str = ""
+    N8N_ROUTE_TIMEOUT_SECONDS: float = 45
+
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
 
 

@@ -22,6 +22,7 @@ import json
 import logging
 import re
 import unicodedata
+from difflib import SequenceMatcher, get_close_matches
 
 from sqlalchemy import select
 
@@ -30,6 +31,7 @@ from app.core.database import SessionLocal
 from app.models import Auditoria, Cliente, DetallePedido, Pedido, Producto
 from app.models.enums import EstadoPedido
 from app.services.agent_service import (
+    CATALOGO_NOMBRES,
     _formatear_clp,
     construir_resumen_pedido,
     interpret_message,
@@ -42,7 +44,25 @@ from app.services.whatsapp_client import send_whatsapp_message
 
 logger = logging.getLogger(__name__)
 
-CONFIRMACIONES = {"si", "sí", "confirmo", "dale", "ok"}
+# Estados del draft una vez que ya se mostró el resumen. Solo desde
+# "esperando_confirmacion" (el último mensaje del bot fue el resumen) un sí
+# explícito confirma el pedido; tras un "no" se pasa a
+# "esperando_modificacion", donde un "sí" NO confirma (ver procesar_mensaje).
+ESTADO_ESPERANDO_CONFIRMACION = "esperando_confirmacion"
+ESTADO_ESPERANDO_MODIFICACION = "esperando_modificacion"
+
+# Únicas respuestas que confirman el pedido (texto normalizado, sin tildes).
+# Pueden ir acompañadas de cortesía ("sí, gracias"), nada más: "ok", "ya" o
+# "bueno" no confirman.
+CONFIRMACIONES = {"si", "confirmo", "confirmar", "dale"}
+_CORTESIA = {"por", "favor", "porfa", "gracias"}
+
+# Negativa "pura" ante el resumen ("no", "no gracias", "todavía no"). Un "no"
+# con más contenido ("no, agrega un bidón") pasa al LLM como modificación.
+_NEGACIONES_SIMPLES = {"no", "nop", "nope", "nel", "negativo"}
+_PALABRAS_NEGATIVA = _NEGACIONES_SIMPLES | {
+    "gracias", "todavia", "aun", "mejor", "por", "ahora", "asi", "lo", "confirmo", "quiero",
+}
 
 # Valor de auditoria.usuario para los cambios en cliente hechos por el bot
 # (los endpoints del panel usan el email del usuario autenticado).
@@ -82,6 +102,12 @@ PREGUNTA_UBICACION = (
 
 PREGUNTA_CAPACIDAD_PROMO = "¿Prefieres que los bidones de la promo sean de 12L o de 20L?"
 
+PREGUNTA_CAPACIDAD_BIDON = "¿{bidones} quieres de {capacidades}?"
+
+PREGUNTA_MODELO = "¿Cuál {familia} quieres? Tenemos estas opciones:\n{opciones}"
+
+MENSAJE_NO_ENCONTRADO = "No encontré {producto} en nuestro catálogo."
+
 PREGUNTA_ACLARACION_BIDON = (
     "¿{cantidad} bidón(es) de {capacidad}L nuevo(s) (con envase) o de recarga "
     "(solo el agua, entregando tu bidón vacío)?"
@@ -95,6 +121,30 @@ MENSAJE_ERROR_PEDIDO = (
 
 MENSAJE_PEDIDO_CANCELADO = (
     "Listo, cancelé tu pedido en curso. Si quieres hacer un pedido nuevo, cuéntame qué necesitas."
+)
+
+MENSAJE_NO_CONFIRMADO = "Entendido, no lo confirmo. ¿Qué quieres cambiar o prefieres cancelar el pedido?"
+
+PREGUNTA_CANCELAR = "¿Quieres cancelar el pedido? Responde CANCELAR, o dime qué quieres cambiar."
+
+PREFIJO_REPETIR_RESUMEN = "Antes de confirmar, revisemos tu pedido una vez más."
+
+PREGUNTA_OPCIONES_PEDIDO = "¿Quieres cambiar algo, confirmar el pedido o cancelarlo?"
+
+MENSAJE_CORRECCION_APLICADA = "Listo, hice el cambio."
+
+MENSAJE_CORRECCION_RECHAZADA = (
+    "Entendido, lo dejo como está. ¿Qué quieres cambiar, o prefieres confirmar o cancelar el pedido?"
+)
+
+MENSAJE_DUDA_GENERICA = "Perdón por la confusión. Tengo anotado en tu pedido: {pedido}."
+
+MENSAJE_DUDA_SIN_PRODUCTOS = "Perdón por la confusión."
+
+MENSAJE_PRODUCTOS_NO_REGISTRADOS = (
+    "Antes de mostrarte el resumen, revisemos tu pedido: tengo anotado {registrados}, "
+    "pero también mencionaste {faltantes}, que no quedó registrado. ¿Qué quieres agregar? "
+    "Si no quieres agregar nada, responde NO."
 )
 
 MENSAJE_CLIENTE_DUPLICADO = (
@@ -116,8 +166,57 @@ _INTENCIONES_RESPUESTA_LLM = ("consulta_precio", "consulta_pedidos", "fuera_de_a
 # Palabras que indican una cancelación EXPLÍCITA del pedido en curso. Es la
 # única forma de vaciar un draft con productos ya confirmados (ver
 # _aplicar_resultado_llm): un simple saludo o mensaje ambiguo nunca debe
-# borrar el pedido, pero esto sí.
-_PALABRAS_CANCELACION = ("cancela", "cancelar", "anula", "anular")
+# borrar el pedido, pero esto sí. Se comparan con similitud difusa para
+# tolerar erratas ("canelar", "cancelr"), ver _intencion_cancelar.
+_PALABRAS_CANCELACION = (
+    "cancela", "cancelar", "cancelo", "cancele", "cancelen", "cancelalo", "cancelarlo",
+    "anula", "anular", "anulo", "anulalo", "anularlo",
+)
+
+# Umbrales de SequenceMatcher.ratio() contra _PALABRAS_CANCELACION, medidos
+# con erratas y palabras parecidas: una errata de una letra ("canelar",
+# "cacelar", "cancelr", "cancear") da 0,93; "canela"/"canelo" 0,92;
+# "canelos"/"candela" 0,86; "manuela"/"ancla" 0,83; "cancha" 0,77;
+# "celular"/"calle" 0,67.
+UMBRAL_CANCELACION = 0.93
+UMBRAL_DUDA_CANCELACION = 0.8
+
+# Una errata solo cancela directamente en mensajes cortos ("canelar",
+# "canelar el pedido"); en uno más largo se pregunta.
+MAX_PALABRAS_CANCELACION_DIFUSA = 3
+
+# Pasos en que el cliente escribe texto libre (nombres, calles): ahí la
+# similitud difusa nunca cancela por sí sola ("Los Canelos 345", "Candela").
+_PASOS_TEXTO_LIBRE = ("nombre", "direccion", "ubicacion", "confirmar_direccion")
+
+# Negaciones que, antes de la palabra de cancelación y en la misma frase,
+# indican que el cliente NO quiere cancelar ("no cancelen mi pedido").
+_NEGACIONES = {"no", "nunca", "ni", "tampoco", "jamas"}
+
+# Palabras de cada tipo de producto, para saber si un mensaje menciona
+# productos (texto normalizado, ver _normalizar_texto).
+_PATRONES_TIPO_PRODUCTO = {
+    "bidon": re.compile(r"\b(bidon\w*|recargas?|nuev[oa]s?|litros?|envases?|12|20|12l|20l)\b"),
+    "dispensador": re.compile(r"\b(dispensador\w*|usb|basico\w*|maquina\w*)\b"),
+    "promo": re.compile(r"\b(promo\w*|combo\w*)\b"),
+}
+
+# Pedido EXPLÍCITO de cambiar o quitar algo ya pedido ("cambia", "mejor
+# dos", "quita el dispensador"). Sin esto, una línea del pedido nunca se
+# reemplaza ni se elimina: lo que extrae el LLM solo se suma.
+_PATRON_MODIFICACION = re.compile(
+    r"\b(cambi\w*|mejor|quit\w*|saca\w*|elimin\w*|borr\w*|reemplaz\w*|correg\w*|corrig\w*"
+    r"|solo|sin|deja\w*|sean|en vez|en lugar|ya no|no quiero)\b"
+)
+
+_NUMEROS_TEXTO = {
+    "un": 1, "una": 1, "uno": 1, "dos": 2, "tres": 3, "cuatro": 4, "cinco": 5,
+    "seis": 6, "siete": 7, "ocho": 8, "nueve": 9, "diez": 10,
+}
+
+# Palabras que pueden ir entre una cantidad y la variante del bidón
+# ("2 bidones de 20 recarga").
+_RELLENO_CANTIDAD_VARIANTE = {"bidon", "bidones", "de", "l", "litro", "litros"}
 
 # Frases (no solo palabras sueltas) que indican que el texto está PIDIENDO o
 # volviendo a CONFIRMAR dirección/ubicación al cliente. Se usan para no dejar
@@ -257,11 +356,887 @@ def _nombre_desde_texto(texto: str | None) -> str | None:
     return nombre
 
 
-def _es_cancelacion_explicita(texto: str | None) -> bool:
-    if not texto:
-        return False
-    texto_normalizado = texto.strip().lower()
-    return any(palabra in texto_normalizado for palabra in _PALABRAS_CANCELACION)
+def _es_confirmacion_explicita(texto: str | None) -> bool:
+    tokens = _normalizar_texto(texto).split()
+    return any(t in CONFIRMACIONES for t in tokens) and all(
+        t in CONFIRMACIONES or t in _CORTESIA for t in tokens
+    )
+
+
+def _es_negativa_simple(texto: str | None) -> bool:
+    tokens = _normalizar_texto(texto).split()
+    return any(t in _NEGACIONES_SIMPLES for t in tokens) and all(
+        t in _PALABRAS_NEGATIVA for t in tokens
+    )
+
+
+def _tipo_producto(nombre: str) -> str:
+    if nombre.startswith("Promo"):
+        return "promo"
+    if nombre.startswith("Dispensador"):
+        return "dispensador"
+    return "bidon"
+
+
+def _menciona_tipo(tipo: str, texto_normalizado: str) -> bool:
+    return bool(_PATRONES_TIPO_PRODUCTO[tipo].search(texto_normalizado))
+
+
+def _menciona_algun_producto(texto_normalizado: str) -> bool:
+    return any(_menciona_tipo(tipo, texto_normalizado) for tipo in _PATRONES_TIPO_PRODUCTO)
+
+
+_PATRON_TEMA_PEDIDO = re.compile(
+    r"\b(pedido\w*|total|cobr\w*|asum\w*|supus\w*|entreg\w*|despach\w*|resumen|envio)\b"
+)
+
+
+_PATRON_RECLAMO = re.compile(
+    r"\b(por que|porque|asum\w*|supus\w*|error\w*|equivoc\w*|no (te )?(pedi|dije)|reclam\w*|mal)\b"
+)
+
+
+def _es_pregunta_o_reclamo(mensaje: str | None) -> bool:
+    """El mensaje pregunta o reclama ("¿por qué asumes...?", "eso está
+    mal"), a diferencia de una respuesta ("2 recargas y 2 nuevos"), que no
+    es una duda aunque hable de productos."""
+    return "?" in (mensaje or "") or bool(_PATRON_RECLAMO.search(_normalizar_texto(mensaje)))
+
+
+def _habla_del_pedido(texto_normalizado: str) -> bool:
+    """El mensaje habla del pedido, sus productos o la entrega (y por lo
+    tanto no está fuera de alcance aunque el LLM lo marque así): "¿por qué
+    asumes que quiero bidones de 12?". "¿Cuánto cuesta una pizza?" no."""
+    return _menciona_algun_producto(texto_normalizado) or bool(_PATRON_TEMA_PEDIDO.search(texto_normalizado))
+
+
+def _intencion_cancelar(texto: str | None, texto_libre: bool = False) -> str | None:
+    """"cancelar" si el mensaje cancela el pedido en curso, "duda" si podría
+    querer cancelar pero no es claro (hay que preguntarle), None si no.
+
+    Detección por palabra clave, tolerante a erratas ("canelar"). RIESGO de
+    falsos positivos: una palabra parecida a "cancelar" no siempre significa
+    "cancela el pedido", y cancelar borra todo el draft. Por eso:
+    - Frases con una negación hasta 3 palabras antes, en la misma frase, NO
+      cancelan: "no cancelen mi pedido", "no me lo cancelen". La frase se
+      corta en la puntuación, así que "no, cancela" sí cancela.
+    - Si la frase menciona productos ("cancela el dispensador") puede querer
+      quitar solo ese producto: es "duda", no se cancela todo.
+    - Solo cancelan directamente las formas exactas (empiezan con "cancel" o
+      "anul") y las erratas de una letra en mensajes cortos. Una similitud
+      menor ("canelos", "candela", "manuela") o una errata dentro de un
+      mensaje largo es "duda".
+    - En pasos de texto libre (nombre, dirección) la similitud difusa nunca
+      cancela, y solo pregunta si el mensaje es una sola palabra con una
+      errata de una letra ("canelar"): "Los Canelos 345" es una dirección y
+      "Manuela" un nombre, no cancelaciones.
+    - Palabras de menos de 5 letras no se evalúan ("nulo").
+    Si aparece un falso positivo nuevo, conviene sumar la palabra a una
+    lista de excepciones en vez de subir los umbrales.
+    """
+    frases = re.split(r"[,.;:!?¿¡\n]+", texto or "")
+    total_palabras = len(_normalizar_texto(texto).split())
+    resultado = None
+    for frase in frases:
+        tokens = _normalizar_texto(frase).split()
+        for i, token in enumerate(tokens):
+            if len(token) < 5:
+                continue
+            exacta = token.startswith(("cancel", "anul"))
+            similitud = 1.0 if exacta else max(
+                SequenceMatcher(None, token, palabra).ratio() for palabra in _PALABRAS_CANCELACION
+            )
+            if similitud < UMBRAL_DUDA_CANCELACION:
+                continue
+            if any(t in _NEGACIONES for t in tokens[max(0, i - 3):i]):
+                continue
+            if texto_libre and not exacta and (
+                total_palabras > 1 or similitud < UMBRAL_CANCELACION
+            ):
+                continue
+            menciona_producto = _menciona_algun_producto(" ".join(tokens))
+            if exacta and not menciona_producto:
+                return "cancelar"
+            if (
+                similitud >= UMBRAL_CANCELACION
+                and not texto_libre
+                and not menciona_producto
+                and total_palabras <= MAX_PALABRAS_CANCELACION_DIFUSA
+            ):
+                return "cancelar"
+            resultado = "duda"
+    return resultado
+
+
+def _cantidad_valida(valor) -> int:
+    """Cantidad entera de un ítem; sin cantidad es 1 (regla del prompt)."""
+    if valor is None:
+        return 1
+    try:
+        return int(valor)
+    except (TypeError, ValueError):
+        return 0
+
+
+# --------------------------------------------------------------------------
+# Productos: familias, atributos y menciones en el mensaje
+#
+# Cada producto del catálogo pertenece a una familia (primera palabra del
+# nombre: bidón, dispensador, promo) y tiene atributos que lo distinguen de
+# los demás de su familia (las otras palabras: "20l", "recarga", "usb",
+# "basico", "2"...). Una mención del cliente ("5 bidones", "dispensador",
+# "promo usb") calza con los productos de su familia que tienen todos los
+# atributos mencionados: si calza con uno solo se agrega; si calza con
+# varios queda PENDIENTE y se pregunta; si no calza con ninguno se le dice
+# que no existe. Esto se decide en código y desde el catálogo de la BD, sin
+# depender de que el LLM pregunte (bug del 2026-10-03 en la noche: con
+# "quiero 5 bidones" el LLM asumió 12L, y "dispensador" sin modelo se
+# perdió en silencio).
+# --------------------------------------------------------------------------
+
+_FAMILIAS = {"bidon": "Bidón", "dispensador": "Dispensador", "promo": "Promo"}
+
+# Palabras del nombre que nombran la familia y no distinguen un producto.
+_PALABRAS_FAMILIA = {"bidon", "bidones", "dispensador", "promo"}
+
+# Capacidades de bidón del catálogo (12 y 20).
+_CAPACIDADES = sorted({int(c) for c in re.findall(r"(\d+)L\b", " ".join(CATALOGO_NOMBRES))})
+
+# Palabras que solo indican el fin de la mención de una promo ("promo usb y
+# 3 bidones de 20" son dos productos).
+_SEPARADORES_MENCION = {"y", "mas", "tambien", "ademas"}
+
+
+def _familia(nombre: str) -> str:
+    tokens = _normalizar_texto(nombre).split()
+    return _FAMILIAS.get(tokens[0], nombre) if tokens else nombre
+
+
+def _atributos(nombre: str) -> frozenset[str]:
+    """"Bidón 20L Recarga" → {"20l", "recarga"}; "Promo Dispensador USB + 2
+    Bidones" → {"usb", "2"}."""
+    return frozenset(t for t in _normalizar_texto(nombre).split() if t not in _PALABRAS_FAMILIA)
+
+
+def _atributo_de(token: str) -> str | None:
+    """Forma canónica de un atributo escrito por el cliente ("nuevos",
+    "envase" → "nuevo"; "recargas" → "recarga"; "básica" → "basico")."""
+    if re.fullmatch(r"nuev[oa]s?|envases?", token):
+        return "nuevo"
+    if re.fullmatch(r"recargas?", token):
+        return "recarga"
+    if re.fullmatch(r"basic[oa]s?", token):
+        return "basico"
+    if token == "usb":
+        return "usb"
+    return None
+
+
+def _categoria(nombre: str) -> str:
+    """Agrupa las variantes de un mismo bidón ("Bidón 20L Recarga" y "Bidón
+    20L Nuevo" son "Bidón 20L"); el resto de productos es su propio nombre."""
+    coincidencia = re.match(r"Bidón (\d+)L\b", nombre)
+    return f"Bidón {coincidencia.group(1)}L" if coincidencia else nombre
+
+
+def _capacidad_en(tokens: list[str], j: int) -> int | None:
+    """Capacidad si tokens[j] la indica: "20l", "20 litros", o "12"/"20"
+    después de "de" ("de 20"). Puede no existir en el catálogo ("5 litros")."""
+    coincidencia = re.fullmatch(r"(\d+)(l|lt|lts)", tokens[j])
+    if coincidencia:
+        return int(coincidencia.group(1))
+    if tokens[j].isdigit():
+        siguiente = tokens[j + 1] if j + 1 < len(tokens) else ""
+        if siguiente in ("l", "lt", "lts", "litro", "litros"):
+            return int(tokens[j])
+        if int(tokens[j]) in _CAPACIDADES and j > 0 and tokens[j - 1] in ("de", "a", "por"):
+            return int(tokens[j])
+    return None
+
+
+def _cantidad_antes_de(tokens: list[str], indice: int) -> int | None:
+    """Cantidad escrita justo antes de una palabra ("5 bidones", "dos
+    dispensadores", "una promo")."""
+    j = indice - 1
+    while j >= 0 and tokens[j] in ("el", "la", "los", "las"):
+        j -= 1
+    if j < 0:
+        return None
+    if tokens[j].isdigit():
+        return int(tokens[j])
+    return _NUMEROS_TEXTO.get(tokens[j])
+
+
+def _mencion_bidon(tokens: list[str], indice: int) -> tuple[int | None, int | None]:
+    """(cantidad, capacidad) escritas alrededor de la variante en
+    tokens[indice]: "2 recargas", "dos nuevos", "2 bidones de 20 litros
+    recarga", "1 de 12 nuevo", "2 recargas de 20". None si no aparecen."""
+    cantidad = capacidad = None
+    j = indice - 1
+    while j >= 0:
+        token = tokens[j]
+        capacidad_token = _capacidad_en(tokens, j)
+        if capacidad_token is not None:
+            capacidad = capacidad or capacidad_token
+        elif token.isdigit():
+            cantidad = int(token)
+            break
+        elif token in _NUMEROS_TEXTO:
+            cantidad = _NUMEROS_TEXTO[token]
+            break
+        elif token not in _RELLENO_CANTIDAD_VARIANTE:
+            break
+        j -= 1
+    if capacidad is None and indice + 2 < len(tokens) and tokens[indice + 1] == "de":
+        capacidad = _capacidad_en(tokens, indice + 2)
+    if capacidad is None and indice + 1 < len(tokens):
+        capacidad = _capacidad_en(tokens, indice + 1)
+    return cantidad, capacidad
+
+
+def _menciones_bidon(texto_normalizado: str) -> list[tuple[str, int | None, int | None]]:
+    """[(variante, cantidad, capacidad)] de cada "recarga"/"nuevo" del
+    mensaje, en orden. "nuevo" solo cuenta si el mensaje habla de bidones
+    (dice "bidón", una capacidad o "recarga"): "un pedido nuevo" o "es una
+    dirección nueva" no son bidones."""
+    tokens = texto_normalizado.split()
+    habla_de_bidones = any(
+        re.fullmatch(r"bidon(es)?|recargas?", t) or _capacidad_en(tokens, j) is not None
+        for j, t in enumerate(tokens)
+    )
+    menciones = []
+    for i, token in enumerate(tokens):
+        if re.fullmatch(r"recargas?", token):
+            variante = "Recarga"
+        elif re.fullmatch(r"nuev[oa]s?", token) and habla_de_bidones:
+            variante = "Nuevo"
+        else:
+            continue
+        menciones.append((variante, *_mencion_bidon(tokens, i)))
+    return menciones
+
+
+def _cantidades_por_variante(texto_normalizado: str, capacidad: int | None) -> dict[str, int | None]:
+    """{"Recarga": n, "Nuevo": m} según lo que el mensaje dice de cada
+    variante de esa capacidad (o sin capacidad explícita), en el orden en que
+    se mencionan (None = mencionada sin cantidad)."""
+    cantidades: dict[str, int | None] = {}
+    for variante, cantidad, capacidad_mencion in _menciones_bidon(texto_normalizado):
+        if capacidad_mencion not in (None, capacidad):
+            continue
+        if cantidades.get(variante) is not None and cantidad is not None:
+            cantidades[variante] += cantidad
+        elif cantidad is not None or variante not in cantidades:
+            cantidades[variante] = cantidad
+    return cantidades
+
+
+def _menciones_productos(texto_normalizado: str) -> list[dict]:
+    """Productos que el mensaje menciona, detectados en código: [{"familia",
+    "cantidad", "atributos", "variante"?, "capacidad"?}]. Primero las promos
+    (que contienen "dispensador" y "bidones" en su nombre), luego los
+    dispensadores y al final los bidones."""
+    tokens = texto_normalizado.split()
+    usados: set[int] = set()
+    menciones = []
+
+    for i, token in enumerate(tokens):
+        if not re.fullmatch(r"promo\w*|combo\w*", token):
+            continue
+        fin = i + 1
+        while fin < min(len(tokens), i + 8) and tokens[fin] not in _SEPARADORES_MENCION:
+            fin += 1
+        ventana = tokens[i:fin]
+        atributos = {a for t in ventana if (a := _atributo_de(t)) in ("usb", "basico")}
+        bidones = re.search(r"\b(1|un|uno|una|2|dos) bidon(es)?\b", " ".join(ventana))
+        if bidones:
+            atributos.add("2" if bidones.group(1) in ("2", "dos") else "1")
+        usados.update(range(i, fin))
+        menciones.append({"familia": "Promo", "cantidad": _cantidad_antes_de(tokens, i), "atributos": atributos})
+
+    for i, token in enumerate(tokens):
+        if i in usados or not re.fullmatch(r"dispensador\w*|maquina\w*", token):
+            continue
+        usados.add(i)
+        atributos = set()
+        for j in range(max(0, i - 1), min(len(tokens), i + 4)):
+            atributo = _atributo_de(tokens[j])
+            if j not in usados and atributo in ("usb", "basico"):
+                atributos.add(atributo)
+                usados.add(j)
+            elif j > i and re.fullmatch(r"dispensador\w*", tokens[j]):
+                usados.add(j)  # "máquina dispensadora": una sola mención
+        menciones.append(
+            {"familia": "Dispensador", "cantidad": _cantidad_antes_de(tokens, i), "atributos": atributos}
+        )
+
+    libres = [t if i not in usados else "_" for i, t in enumerate(tokens)]
+    variantes = _menciones_bidon(" ".join(libres))
+    for variante, cantidad, capacidad in variantes:
+        atributos = {variante.lower()} | ({f"{capacidad}l"} if capacidad else set())
+        menciones.append(
+            {"familia": "Bidón", "cantidad": cantidad, "atributos": atributos, "variante": variante, "capacidad": capacidad}
+        )
+    if not variantes:
+        for i, token in enumerate(libres):
+            if not re.fullmatch(r"bidon(es)?|botellon(es)?", token):
+                continue
+            capacidad = next(
+                (c for j in range(i + 1, min(len(libres), i + 4)) if (c := _capacidad_en(libres, j)) is not None),
+                None,
+            )
+            menciones.append(
+                {
+                    "familia": "Bidón",
+                    "cantidad": _cantidad_antes_de(libres, i),
+                    "atributos": {f"{capacidad}l"} if capacidad else set(),
+                    "variante": None,
+                    "capacidad": capacidad,
+                }
+            )
+    return menciones
+
+
+def _atributos_mensaje(texto_normalizado: str) -> set[str]:
+    """Todos los atributos de producto que el mensaje dice explícitamente."""
+    tokens = texto_normalizado.split()
+    atributos = {a for t in tokens if (a := _atributo_de(t))}
+    atributos |= {f"{c}l" for j in range(len(tokens)) if (c := _capacidad_en(tokens, j)) is not None}
+    for mencion in _menciones_productos(texto_normalizado):
+        atributos |= mencion["atributos"]
+    return atributos
+
+
+def _candidatos(familia: str, atributos: set[str], catalogo: list[dict]) -> list[dict]:
+    return [
+        producto
+        for producto in catalogo
+        if _familia(producto["nombre"]) == familia and set(atributos) <= _atributos(producto["nombre"])
+    ]
+
+
+def _opciones(productos: list[dict]) -> list[dict]:
+    return [{"nombre": p["nombre"], "precio": float(p["precio"])} for p in productos]
+
+
+def _descripcion_mencion(mencion: dict) -> str:
+    if mencion["familia"] == "Bidón" and mencion.get("capacidad"):
+        return f"bidones de {mencion['capacidad']}L"
+    return " ".join([mencion["familia"].lower(), *sorted(mencion["atributos"])])
+
+
+def _sugerencias(texto: str, familia: str | None, catalogo: list[dict]) -> list[dict]:
+    """Productos que podrían ser lo que el cliente quiso decir: los de la
+    misma familia, o los de nombre parecido."""
+    if familia:
+        return _opciones([p for p in catalogo if _familia(p["nombre"]) == familia])
+    nombres = get_close_matches(texto, [p["nombre"] for p in catalogo], n=3, cutoff=0.4)
+    return _opciones([p for p in catalogo if p["nombre"] in nombres])
+
+
+def _sumar_linea(productos: list[dict], nombre: str, cantidad: int) -> None:
+    for item in productos:
+        if item.get("nombre_producto") == nombre:
+            item["cantidad"] = _cantidad_valida(item.get("cantidad")) + cantidad
+            return
+    productos.append({"nombre_producto": nombre, "cantidad": cantidad})
+
+
+def _fusionar_productos(
+    previos: list[dict],
+    extraidos: list[dict],
+    mensaje: str | None,
+    excluir_familias: frozenset[str] = frozenset(),
+) -> tuple[list[dict], set[str]]:
+    """Fusiona lo que extrajo el LLM en este turno con los productos del
+    draft. Devuelve (productos, familias que el cliente cambió o quitó
+    explícitamente).
+
+    - "agregar" (por defecto) suma: misma línea (producto y variante) suma
+      cantidad, producto distinto agrega una línea.
+    - "fijar"/"quitar" solo se aplican si el mensaje pide explícitamente un
+      cambio (_PATRON_MODIFICACION): nunca se reemplaza ni borra una línea
+      porque el LLM devolvió una lista distinta (bug del 2026-10-03: "si, un
+      dispensador usb" dejó el pedido solo con el dispensador).
+    - Un ítem "agregar" de un tipo de producto que el mensaje no menciona se
+      descarta: es el LLM repitiendo productos del contexto (ej. responde
+      "sí" a la dirección y devuelve los bidones de nuevo), y sumarlo los
+      duplicaría.
+    - Los ítems ya validados por _validar_extraidos (catálogo y atributos);
+      las cantidades < 1 se descartan.
+    """
+    texto = _normalizar_texto(mensaje)
+    modificacion_explicita = bool(_PATRON_MODIFICACION.search(texto))
+    productos = [dict(item) for item in previos]
+    familias_modificadas: set[str] = set()
+
+    for item in extraidos:
+        nombre = item.get("nombre_producto")
+        if _familia(nombre) in excluir_familias:
+            continue
+        operacion = item.get("operacion") or "agregar"
+        indice = next(
+            (i for i, p in enumerate(productos) if p.get("nombre_producto") == nombre), None
+        )
+
+        if operacion in ("fijar", "quitar") and not modificacion_explicita:
+            if operacion == "quitar" or indice is not None:
+                logger.info("[order_flow] '%s' de %s ignorado: el cliente no pidió un cambio", operacion, nombre)
+                continue
+            operacion = "agregar"
+
+        if operacion == "agregar" and not _menciona_tipo(_tipo_producto(nombre), texto):
+            logger.info("[order_flow] %s descartado: el mensaje no menciona ese producto (eco del contexto)", nombre)
+            continue
+
+        if operacion == "quitar":
+            if indice is None:
+                # "quita el dispensador" cuando el LLM eligió el otro modelo:
+                # si hay una sola línea de ese tipo, es esa.
+                del_tipo = [
+                    i for i, p in enumerate(productos)
+                    if _tipo_producto(p.get("nombre_producto") or "") == _tipo_producto(nombre)
+                ]
+                indice = del_tipo[0] if len(del_tipo) == 1 else None
+            if indice is not None:
+                familias_modificadas.add(_familia(productos[indice]["nombre_producto"]))
+                productos.pop(indice)
+            continue
+
+        cantidad = _cantidad_valida(item.get("cantidad"))
+        if cantidad < 1:
+            continue
+        if operacion == "fijar":
+            familias_modificadas.add(_familia(nombre))
+            if indice is not None:
+                productos[indice] = {**productos[indice], "cantidad": cantidad}
+                continue
+        _sumar_linea(productos, nombre, cantidad)
+
+    return productos, familias_modificadas
+
+
+def _validar_extraidos(
+    extraidos: list[dict], mensaje: str | None, productos_previos: list[dict], catalogo: list[dict]
+) -> tuple[list[dict], list[str]]:
+    """Separa lo que extrajo el LLM en (ítems aceptados, nombres que no
+    existen en el catálogo). Un ítem "agregar" cuyo producto tiene atributos
+    que el cliente NO dijo (ej. "Bidón 12L Recarga" cuando dijo "5 bidones",
+    o "Dispensador USB" cuando dijo "dispensador") es una suposición del LLM
+    y se rechaza: la mención queda pendiente en _resolver_menciones y se le
+    pregunta. Al pedir un cambio explícito ("cambia los nuevos por recarga")
+    se aceptan también los atributos de las líneas que ya están en el
+    pedido."""
+    nombres_catalogo = {p["nombre"] for p in catalogo}
+    texto = _normalizar_texto(mensaje)
+    dichos = _atributos_mensaje(texto)
+    if _PATRON_MODIFICACION.search(texto):
+        for item in productos_previos:
+            dichos |= _atributos(item.get("nombre_producto") or "")
+
+    aceptados, no_encontrados = [], []
+    for item in extraidos:
+        nombre = item.get("nombre_producto")
+        if nombre not in nombres_catalogo:
+            logger.warning("[order_flow] Producto fuera del catálogo: %r", nombre)
+            no_encontrados.append(str(nombre))
+            continue
+        if (item.get("operacion") or "agregar") == "agregar" and not _atributos(nombre) <= dichos:
+            logger.info(
+                "[order_flow] %s rechazado: el cliente no dijo %s",
+                nombre,
+                sorted(_atributos(nombre) - dichos),
+            )
+            continue
+        aceptados.append(item)
+    return aceptados, no_encontrados
+
+
+def _capacidad_respuesta(texto_normalizado: str) -> int | None:
+    """Capacidad que da el cliente al preguntarle "¿de 12L o de 20L?": "de
+    20", "20 litros", "20l" o, en una respuesta corta, "20" a secas."""
+    tokens = texto_normalizado.split()
+    for j in range(len(tokens)):
+        capacidad = _capacidad_en(tokens, j)
+        if capacidad is not None:
+            return capacidad
+    if len(tokens) <= 3:
+        palabras = {"doce": 12, "veinte": 20}
+        for token in tokens:
+            if token.isdigit() and int(token) in _CAPACIDADES:
+                return int(token)
+            if token in palabras:
+                return palabras[token]
+    return None
+
+
+def _resolver_aclaracion_bidon(aclaracion: dict | None, mensaje: str | None) -> dict | None:
+    """Resuelve en código lo que falta de un bidón pendiente, sin depender
+    del LLM: primero la capacidad ("¿de 12L o de 20L?") y después la variante
+    ("¿nuevo o recarga?"). Devuelve {"aclaracion": lo que sigue pendiente o
+    None, "lineas": líneas a agregar, "no_encontrado": capacidad pedida que
+    no existe o None}, o None si el mensaje no responde nada de eso.
+
+    - "20" / "de 20 litros": fija la capacidad.
+    - "recarga" / "los quiero nuevos": toda la cantidad pendiente a esa
+      variante (cubre también el error del LLM con "Quiero 2 bidones de 20
+      litros recarga", que dejaba el ítem pendiente pese al "recarga").
+    - "2 recargas y 2 nuevos": una línea por variante.
+    - "1 nuevo y el resto recarga": la variante sin número se lleva el resto.
+    - "2 recargas" de 4 pendientes: quedan 2 pendientes y se vuelve a
+      preguntar por ellos.
+    - Si todavía no hay capacidad, el reparto por variante ("3 recarga y 2
+      nuevos") se guarda y se aplica cuando el cliente la diga.
+    - "¿nuevo o recarga?" (ambas sin número) no resuelve nada.
+    - "1 de 12 nuevo" en el mismo mensaje es otro bidón, ya completo: se
+      agrega como línea aparte.
+    """
+    if not aclaracion:
+        return None
+    capacidad = aclaracion.get("capacidad_litros")
+    pendiente = _cantidad_valida(aclaracion.get("cantidad"))
+    if pendiente < 1:
+        return None
+    texto = _normalizar_texto(mensaje)
+    respondio = False
+
+    if capacidad is None:
+        capacidad_dicha = _capacidad_respuesta(texto)
+        if capacidad_dicha is not None and capacidad_dicha not in _CAPACIDADES:
+            return {"aclaracion": aclaracion, "lineas": [], "no_encontrado": f"bidones de {capacidad_dicha}L"}
+        if capacidad_dicha is not None:
+            capacidad = capacidad_dicha
+            respondio = True
+    elif capacidad not in _CAPACIDADES:
+        return None
+
+    cantidades = _cantidades_por_variante(texto, capacidad)
+    if cantidades:
+        respondio = True
+    else:
+        cantidades = dict(aclaracion.get("variantes") or {})
+    if not respondio:
+        return None
+
+    sin_cantidad = [variante for variante, n in cantidades.items() if n is None]
+    if len(sin_cantidad) > 1:
+        cantidades = {}
+    elif sin_cantidad:
+        resto = pendiente - sum(n for n in cantidades.values() if n is not None)
+        if resto < 1:
+            cantidades = {}
+        else:
+            cantidades[sin_cantidad[0]] = resto
+
+    if capacidad is None:
+        nueva = {**aclaracion, "variantes": cantidades} if cantidades else aclaracion
+        return {"aclaracion": nueva, "lineas": [], "no_encontrado": None}
+
+    lineas = [
+        {"nombre_producto": f"Bidón {capacidad}L {variante}", "cantidad": n}
+        for variante, n in cantidades.items()
+        if n > 0
+    ]
+    restante = pendiente - sum(item["cantidad"] for item in lineas)
+    nueva = {"capacidad_litros": capacidad, "cantidad": restante} if restante > 0 else None
+    # Bidones de la otra capacidad que el mismo mensaje ya trae completos
+    # ("2 de 20 recarga y 1 de 12 nuevo"): se agregan aquí también, para no
+    # depender de que el LLM los haya extraído.
+    otras = [
+        {"nombre_producto": f"Bidón {capacidad_mencion}L {variante}", "cantidad": n}
+        for variante, n, capacidad_mencion in _menciones_bidon(texto)
+        if capacidad_mencion not in (None, capacidad) and capacidad_mencion in _CAPACIDADES and n
+    ]
+    return {"aclaracion": nueva, "lineas": lineas + otras, "no_encontrado": None}
+
+
+def _resolver_pendientes_modelo(
+    pendientes: list[dict], mensaje: str | None, catalogo: list[dict]
+) -> tuple[list[dict], list[dict], set[str]]:
+    """Resuelve en código los productos pendientes de modelo ("¿qué
+    dispensador?") con los atributos que dice el mensaje ("el usb"). Devuelve
+    (pendientes que siguen, líneas a agregar, familias resueltas)."""
+    dichos = _atributos_mensaje(_normalizar_texto(mensaje))
+    restantes, lineas, familias = [], [], set()
+    for pendiente in pendientes:
+        atributos = set(pendiente.get("atributos") or []) | {
+            a for a in dichos if any(a in _atributos(o["nombre"]) for o in pendiente.get("opciones") or [])
+        }
+        candidatos = _candidatos(pendiente["familia"], atributos, catalogo)
+        if len(candidatos) == 1:
+            lineas.append({"nombre_producto": candidatos[0]["nombre"], "cantidad": pendiente["cantidad"]})
+            familias.add(pendiente["familia"])
+        else:
+            restantes.append(pendiente)
+    return restantes, lineas, familias
+
+
+def _resolver_menciones(
+    menciones: list[dict], aceptados: list[dict], catalogo: list[dict]
+) -> tuple[list[dict], dict | None, list[dict], list[dict]]:
+    """Revisa cada producto que el cliente mencionó y que el LLM no extrajo
+    (bien): si calza con un solo producto del catálogo se agrega; si calza
+    con varios queda pendiente; si no calza con ninguno se avisa. Así nada
+    de lo que el cliente dijo se descarta en silencio. Devuelve (líneas a
+    agregar, bidón pendiente, pendientes de modelo, no encontrados)."""
+    lineas: list[dict] = []
+    pendientes: list[dict] = []
+    no_encontrados: list[dict] = []
+    bidon: dict | None = None
+
+    for mencion in menciones:
+        cubierta = any(
+            _familia(item["nombre_producto"]) == mencion["familia"]
+            and mencion["atributos"] <= _atributos(item["nombre_producto"])
+            for item in aceptados
+        )
+        if cubierta:
+            continue
+        cantidad = mencion["cantidad"]
+        candidatos = _candidatos(mencion["familia"], mencion["atributos"], catalogo)
+        if len(candidatos) == 1:
+            lineas.append({"nombre_producto": candidatos[0]["nombre"], "cantidad": cantidad or 1})
+            continue
+        if mencion["familia"] == "Bidón":
+            capacidad = mencion.get("capacidad")
+            if not candidatos:
+                # Capacidad que no existe ("de 5 litros"): se avisa y se
+                # pregunta la capacidad como si no la hubiera dicho.
+                no_encontrados.append(
+                    {"texto": _descripcion_mencion(mencion), "opciones": []}
+                )
+                capacidad = None
+            if bidon is None:
+                bidon = {"capacidad_litros": capacidad, "cantidad": 0}
+            if bidon["capacidad_litros"] != capacidad:
+                # Dos bidones ambiguos de capacidades distintas en un mismo
+                # mensaje: se pregunta la capacidad de todos juntos.
+                bidon["capacidad_litros"] = None
+            bidon["cantidad"] += cantidad or 1
+            if mencion.get("variante"):
+                variantes = bidon.setdefault("variantes", {})
+                variantes[mencion["variante"]] = (variantes.get(mencion["variante"]) or 0) + (cantidad or 1)
+            continue
+        if not candidatos:
+            no_encontrados.append(
+                {"texto": _descripcion_mencion(mencion), "opciones": _sugerencias("", mencion["familia"], catalogo)}
+            )
+            continue
+        pendientes.append(
+            {
+                "familia": mencion["familia"],
+                "cantidad": cantidad or 1,
+                "atributos": sorted(mencion["atributos"]),
+                "opciones": _opciones(candidatos),
+            }
+        )
+    return lineas, bidon, pendientes, no_encontrados
+
+
+def _sumar_aclaraciones(actual: dict | None, nueva: dict) -> dict:
+    """Junta dos bidones pendientes de aclarar en uno: misma capacidad suma
+    cantidades; capacidades distintas se preguntan de nuevo juntas."""
+    if not actual:
+        return nueva
+    variantes = dict(actual.get("variantes") or {})
+    for variante, n in (nueva.get("variantes") or {}).items():
+        variantes[variante] = (variantes.get(variante) or 0) + (n or 0)
+    capacidad = actual.get("capacidad_litros")
+    junta = {
+        "capacidad_litros": capacidad if capacidad == nueva.get("capacidad_litros") else None,
+        "cantidad": _cantidad_valida(actual.get("cantidad")) + _cantidad_valida(nueva.get("cantidad")),
+    }
+    if variantes:
+        junta["variantes"] = variantes
+    return junta
+
+
+def _unidades_por_familia(
+    productos: list[dict], aclaracion: dict | None, pendientes_modelo: list[dict] | None = None
+) -> dict[str, int]:
+    """Unidades por familia del draft, contando también los productos que
+    esperan una aclaración (capacidad, variante o modelo)."""
+    unidades: dict[str, int] = {}
+    for item in productos:
+        familia = _familia(item.get("nombre_producto") or "")
+        unidades[familia] = unidades.get(familia, 0) + _cantidad_valida(item.get("cantidad"))
+    if aclaracion:
+        unidades["Bidón"] = unidades.get("Bidón", 0) + _cantidad_valida(aclaracion.get("cantidad"))
+    for pendiente in pendientes_modelo or []:
+        familia = pendiente.get("familia")
+        unidades[familia] = unidades.get(familia, 0) + _cantidad_valida(pendiente.get("cantidad"))
+    return unidades
+
+
+def _unidades_draft(draft: dict) -> dict[str, int]:
+    return _unidades_por_familia(
+        draft.get("productos") or [], draft.get("aclaracion_pendiente"), draft.get("pendientes_modelo")
+    )
+
+
+def _actualizar_unidades_pedidas(
+    draft_previo: dict, draft_nuevo: dict, familias_modificadas: set[str]
+) -> dict[str, int]:
+    """Registro, por familia, de cuántas unidades ha pedido el cliente en la
+    conversación. Es independiente de cómo se fusionan las líneas: solo sube
+    cuando el draft crece (incluidos los productos pendientes de aclarar), y
+    solo baja cuando el cliente cambia o quita algo explícitamente. Si el
+    draft termina con menos unidades que este registro, algo se perdió en el
+    camino y no se muestra el resumen (ver _productos_no_registrados)."""
+    antes = _unidades_draft(draft_previo)
+    pedidas = dict(draft_previo["unidades_pedidas"]) if "unidades_pedidas" in draft_previo else dict(antes)
+    despues = _unidades_draft(draft_nuevo)
+    for familia in antes.keys() | despues.keys():
+        if familia in familias_modificadas:
+            pedidas[familia] = despues.get(familia, 0)
+        else:
+            pedidas[familia] = pedidas.get(familia, 0) + max(0, despues.get(familia, 0) - antes.get(familia, 0))
+    return {familia: n for familia, n in pedidas.items() if n > 0}
+
+
+def _productos_no_registrados(draft: dict) -> dict[str, int]:
+    """Unidades que el cliente pidió en la conversación y que no están en el
+    draft (ver _actualizar_unidades_pedidas)."""
+    actuales = _unidades_draft(draft)
+    return {
+        familia: pedidas - actuales.get(familia, 0)
+        for familia, pedidas in (draft.get("unidades_pedidas") or {}).items()
+        if pedidas > actuales.get(familia, 0)
+    }
+
+
+# --------------------------------------------------------------------------
+# Corrección propuesta por el bot ("¿Quieres que los cambie todos a 20L?")
+#
+# Cuando el bot ofrece corregir algo del pedido, el LLM devuelve también la
+# corrección como dato (correccion_propuesta). El código la valida contra el
+# catálogo y la guarda en el draft; si el cliente responde "sí" al mensaje
+# siguiente, se aplica y se muestra el resumen nuevo (nunca se confirma el
+# pedido en el mismo turno). Cualquier otro mensaje la descarta.
+# --------------------------------------------------------------------------
+
+# Atributos que se reemplazan según lo que cambia la corrección.
+_DIMENSIONES_CORRECCION = {
+    "capacidad": lambda atributo: re.fullmatch(r"\d+l", atributo) is not None,
+    "variante": lambda atributo: atributo in ("nuevo", "recarga"),
+    "modelo": lambda atributo: atributo in ("usb", "basico"),
+}
+
+
+def _valor_atributo(atributo: str, valor) -> str | None:
+    """Valor nuevo de la corrección como atributo de catálogo: "20" / "20L"
+    → "20l"; "Nuevos" → "nuevo"; "USB" → "usb"."""
+    texto = _normalizar_texto(str(valor if valor is not None else ""))
+    if atributo == "capacidad":
+        numero = re.fullmatch(r"(\d+)\s*(l|lt|lts|litros?)?", texto)
+        return f"{numero.group(1)}l" if numero else None
+    return _atributo_de(texto) if texto else None
+
+
+def _validar_correccion(propuesta: dict | None, productos: list[dict], catalogo: list[dict]) -> dict | None:
+    """Corrección propuesta por el LLM, validada contra el draft y el
+    catálogo de la BD: cada línea afectada debe estar en el pedido y el
+    producto resultante debe existir (exactamente uno). Devuelve {"cambios":
+    [{"desde", "hacia", "cantidad": unidades a cambiar o None = todas}],
+    "pide_cantidad": bool} o None si no es válida (y entonces no se ofrece)."""
+    if not isinstance(propuesta, dict):
+        return None
+    atributo = propuesta.get("atributo")
+    actuales = propuesta.get("productos_actuales") or []
+    alcance = propuesta.get("alcance") or "todas"
+    en_pedido = {p.get("nombre_producto"): _cantidad_valida(p.get("cantidad")) for p in productos}
+    if not isinstance(actuales, list) or not actuales or any(a not in en_pedido for a in actuales):
+        return None
+
+    if atributo == "cantidad":
+        nueva = _cantidad_valida(propuesta.get("valor_nuevo"))
+        if len(actuales) != 1 or nueva < 1 or nueva == en_pedido[actuales[0]]:
+            return None
+        return {"cambios": [{"desde": actuales[0], "hacia": actuales[0], "cantidad_nueva": nueva}], "pide_cantidad": False}
+
+    es_de_la_dimension = _DIMENSIONES_CORRECCION.get(atributo)
+    valor = _valor_atributo(atributo, propuesta.get("valor_nuevo")) if es_de_la_dimension else None
+    if not valor:
+        return None
+    cambios = []
+    for actual in actuales:
+        atributos = {a for a in _atributos(actual) if not es_de_la_dimension(a)} | {valor}
+        candidatos = [
+            p["nombre"] for p in catalogo
+            if _familia(p["nombre"]) == _familia(actual) and set(_atributos(p["nombre"])) == atributos
+        ]
+        if len(candidatos) != 1 or candidatos[0] == actual:
+            return None
+        cambios.append({"desde": actual, "hacia": candidatos[0], "cantidad": None})
+
+    if alcance == "algunas":
+        return {"cambios": cambios, "pide_cantidad": True}
+    if alcance != "todas":
+        unidades = _cantidad_valida(alcance)
+        if len(cambios) != 1 or not 1 <= unidades <= en_pedido[cambios[0]["desde"]]:
+            return None
+        cambios[0]["cantidad"] = unidades
+    return {"cambios": cambios, "pide_cantidad": False}
+
+
+def _pregunta_correccion(correccion: dict, productos: list[dict]) -> str:
+    en_pedido = {p.get("nombre_producto"): _cantidad_valida(p.get("cantidad")) for p in productos}
+    cambios = correccion["cambios"]
+    if "cantidad_nueva" in cambios[0]:
+        cambio = cambios[0]
+        return f"¿Quieres que deje {cambio['cantidad_nueva']}x {cambio['desde']}?"
+    if correccion["pide_cantidad"]:
+        opciones = ", ".join(f"{en_pedido[c['desde']]}x {c['desde']} → {c['hacia']}" for c in cambios)
+        return f"¿Cuántas unidades quieres cambiar? Tienes: {opciones}. Dime cuántas, o responde TODAS."
+    detalle = " y ".join(
+        f"{c['cantidad'] or en_pedido[c['desde']]}x {c['desde']} por {c['hacia']}" for c in cambios
+    )
+    return f"¿Quieres que cambie {detalle}?"
+
+
+def _aplicar_cambios_correccion(productos: list[dict], correccion: dict) -> list[dict]:
+    resultado = [dict(item) for item in productos]
+    for cambio in correccion["cambios"]:
+        indice = next((i for i, p in enumerate(resultado) if p.get("nombre_producto") == cambio["desde"]), None)
+        if indice is None:
+            continue
+        actual = _cantidad_valida(resultado[indice].get("cantidad"))
+        if "cantidad_nueva" in cambio:
+            resultado[indice]["cantidad"] = cambio["cantidad_nueva"]
+            continue
+        unidades = min(cambio["cantidad"] or actual, actual)
+        if unidades == actual:
+            resultado.pop(indice)
+        else:
+            resultado[indice]["cantidad"] = actual - unidades
+        _sumar_linea(resultado, cambio["hacia"], unidades)
+    return resultado
+
+
+def _unidades_respuesta(texto: str | None) -> int | str | None:
+    """Respuesta a "¿cuántas unidades quieres cambiar?": "todas" o un número."""
+    tokens = _normalizar_texto(texto).split()
+    if any(t in ("todas", "todos", "toda", "todo") for t in tokens):
+        return "todas"
+    for token in tokens:
+        if token.isdigit():
+            return int(token)
+        if token in _NUMEROS_TEXTO:
+            return _NUMEROS_TEXTO[token]
+    return None
+
+
+def _sin_pregunta_final(texto: str | None) -> str:
+    """Quita la última pregunta del texto del LLM (la reemplaza la pregunta
+    armada en código desde la corrección validada)."""
+    return re.sub(r"\s*¿[^¿]*\?\s*$", "", texto or "").strip()
+
+
+async def _catalogo() -> list[dict]:
+    """Catálogo vigente desde la BD: [{"nombre", "precio"}]."""
+    async with SessionLocal() as session:
+        result = await session.execute(select(Producto).order_by(Producto.id))
+        return [{"nombre": p.nombre, "precio": p.precio_unitario} for p in result.scalars().all()]
 
 
 def _resumen_productos_corto(productos: list[dict]) -> str:
@@ -292,27 +1267,6 @@ def _respuesta_es_de_producto(texto: str | None) -> bool:
         frase in texto_minusculas
         for frase in ("algo más", "algo mas", "nombre", "confirmas el pedido", "resumen")
     )
-
-
-def _resolver_aclaracion_bidon(
-    aclaracion: dict | None, productos: list[dict], mensaje: str | None
-) -> tuple[dict | None, list[dict]]:
-    """Si queda un bidón pendiente de "nuevo o recarga" y el mensaje actual
-    dice explícitamente uno de los dos (y no ambos), arma el producto en
-    código. Cubre un error reproducible del LLM: con "Quiero 2 bidones de 20
-    litros recarga" deja el ítem en aclaracion_pendiente pese al "recarga"."""
-    if not aclaracion:
-        return aclaracion, productos
-    texto = _normalizar_texto(mensaje)
-    dice_recarga = "recarga" in texto
-    dice_nuevo = bool(re.search(r"\bnuev[oa]s?\b", texto))
-    capacidad = aclaracion.get("capacidad_litros")
-    if dice_recarga == dice_nuevo or capacidad not in (12, 20):
-        return aclaracion, productos
-    nombre = f"Bidón {capacidad}L {'Recarga' if dice_recarga else 'Nuevo'}"
-    if any(item.get("nombre_producto") == nombre for item in productos):
-        return None, productos
-    return None, [*productos, {"nombre_producto": nombre, "cantidad": aclaracion.get("cantidad") or 1}]
 
 
 def _promo_sin_capacidad(productos: list[dict], notas: str | None) -> bool:
@@ -349,10 +1303,22 @@ def _datos_faltantes(draft: dict, cliente: dict | None) -> list[str]:
     productos = draft.get("productos") or []
     faltantes = []
 
+    # No se avanza a la dirección (ni a "¿algo más?" ni al resumen) mientras
+    # quede un producto por aclarar (capacidad o variante de un bidón, modelo
+    # de un dispensador o promo), algo que el cliente pidió y no existe en el
+    # catálogo, o una línea inválida (fuera del catálogo, o con cantidad 0;
+    # _validar_extraidos ya las filtra, esto es defensivo).
     if (
         not productos
         or draft.get("aclaracion_pendiente")
+        or draft.get("pendientes_modelo")
+        or draft.get("no_encontrados")
         or _promo_sin_capacidad(productos, draft.get("notas"))
+        or any(
+            item.get("nombre_producto") not in CATALOGO_NOMBRES
+            or _cantidad_valida(item.get("cantidad")) < 1
+            for item in productos
+        )
     ):
         faltantes.append("producto")
 
@@ -379,8 +1345,13 @@ def _contexto_desde_draft(draft: dict | None) -> dict | None:
         return None
     return {
         "intencion": draft.get("intencion"),
-        "productos": draft.get("productos", []),
+        # Con otro nombre que el campo "productos" de la respuesta, para que
+        # el LLM no los repita: solo debe extraer los del mensaje actual.
+        "productos_en_pedido": draft.get("productos", []),
         "aclaracion_pendiente": draft.get("aclaracion_pendiente"),
+        "productos_sin_modelo": [
+            {"familia": p["familia"], "cantidad": p["cantidad"]} for p in draft.get("pendientes_modelo") or []
+        ],
         "usa_direccion_habitual": draft.get("usa_direccion_habitual"),
         "direccion_texto": draft.get("direccion_texto"),
         "notas": draft.get("notas"),
@@ -389,6 +1360,7 @@ def _contexto_desde_draft(draft: dict | None) -> dict | None:
         "nombre_cliente": draft.get("nombre_cliente"),
         "algo_mas_preguntado": draft.get("paso") == "algo_mas",
         "pregunta_pendiente": draft.get("paso"),
+        "resumen_mostrado": draft.get("estado") in (ESTADO_ESPERANDO_CONFIRMACION, ESTADO_ESPERANDO_MODIFICACION),
     }
 
 
@@ -410,18 +1382,65 @@ async def _interpretar_con_debug(
     return resultado
 
 
+def _lista_opciones(opciones: list[dict]) -> str:
+    return "\n".join(f"- {o['nombre']}: {_formatear_clp(o['precio'])}" for o in opciones)
+
+
+def _pregunta_pendiente_producto(draft: dict) -> str | None:
+    """Pregunta, armada en código, por lo primero que falta aclarar de los
+    productos: algo que no existe en el catálogo, la capacidad de un bidón,
+    su variante, o el modelo de un producto con varias opciones."""
+    partes = []
+    sin_opciones = False
+    for no_encontrado in draft.get("no_encontrados") or []:
+        texto = MENSAJE_NO_ENCONTRADO.format(producto=no_encontrado["texto"])
+        if no_encontrado.get("opciones"):
+            texto += f" ¿Te refieres a alguna de estas opciones?\n{_lista_opciones(no_encontrado['opciones'])}"
+        else:
+            sin_opciones = True
+        partes.append(texto)
+
+    aclaracion = draft.get("aclaracion_pendiente")
+    if aclaracion and aclaracion.get("capacidad_litros") is None:
+        cantidad = _cantidad_valida(aclaracion.get("cantidad"))
+        bidones = "El bidón lo" if cantidad == 1 else f"Los {cantidad} bidones los"
+        partes.append(
+            PREGUNTA_CAPACIDAD_BIDON.format(
+                bidones=bidones,
+                capacidades=" o de ".join(f"{c}L" for c in _CAPACIDADES),
+            )
+        )
+    elif aclaracion:
+        partes.append(
+            PREGUNTA_ACLARACION_BIDON.format(
+                cantidad=aclaracion.get("cantidad", 1),
+                capacidad=aclaracion.get("capacidad_litros", ""),
+            )
+        )
+    elif draft.get("pendientes_modelo"):
+        pendiente = draft["pendientes_modelo"][0]
+        partes.append(
+            PREGUNTA_MODELO.format(
+                familia=pendiente["familia"].lower(),
+                opciones=_lista_opciones(pendiente["opciones"]),
+            )
+        )
+    elif sin_opciones:
+        partes.append(PREGUNTA_PRODUCTO)
+    return "\n\n".join(partes) or None
+
+
 def _texto_paso_producto(draft: dict, respuesta_llm: str | None) -> str:
-    """Pregunta del paso "producto". Se deja pasar el texto del LLM solo si
-    efectivamente habla de productos (ej. "¿nuevo o recarga?"); si saltó a
-    otro paso (pidió dirección, nombre, "¿algo más?"...) se reemplaza."""
+    """Pregunta del paso "producto". Lo que falta aclarar de los productos se
+    pregunta siempre con el texto armado en código. Si no falta nada de eso,
+    se deja pasar el texto del LLM solo si efectivamente habla de productos;
+    si saltó a otro paso (pidió dirección, nombre, "¿algo más?"...) se
+    reemplaza."""
+    pregunta = _pregunta_pendiente_producto(draft)
+    if pregunta:
+        return pregunta
     if _respuesta_es_de_producto(respuesta_llm):
         return respuesta_llm
-    aclaracion = draft.get("aclaracion_pendiente")
-    if aclaracion:
-        return PREGUNTA_ACLARACION_BIDON.format(
-            cantidad=aclaracion.get("cantidad", 1),
-            capacidad=aclaracion.get("capacidad_litros", ""),
-        )
     productos = draft.get("productos") or []
     if productos and _promo_sin_capacidad(productos, draft.get("notas")):
         return PREGUNTA_CAPACIDAD_PROMO
@@ -455,33 +1474,28 @@ def _texto_paso(
     raise ValueError(f"Paso desconocido: {paso}")
 
 
-def _datos_despacho(draft: dict, cliente: dict | None) -> tuple[str, str, str]:
-    """(nombre, dirección de despacho, estado de la ubicación) para el
-    resumen previo a confirmar."""
+def _datos_despacho(draft: dict, cliente: dict | None) -> tuple[str, str]:
+    """(nombre, dirección de despacho) para el resumen previo a confirmar. Las
+    coordenadas no se muestran al cliente; se guardan al confirmar (ver
+    _confirmar_pedido)."""
     nombre = cliente["nombre"] if cliente is not None else draft.get("nombre_cliente")
     if cliente is not None and draft.get("usa_direccion_habitual"):
         direccion = cliente["direccion"]
-        tiene_coordenadas = cliente.get("latitud") is not None and cliente.get("longitud") is not None
-        ubicacion = "registrada" if tiene_coordenadas else "sin ubicación registrada"
     else:
         direccion = draft.get("direccion_texto")
-        if draft.get("ubicacion") is not None:
-            ubicacion = "compartida por WhatsApp"
-        else:
-            ubicacion = "no compartida (despacho solo con la dirección escrita)"
-    return nombre, direccion, ubicacion
+    return nombre, direccion
 
 
 async def _construir_resumen(draft: dict, cliente: dict | None) -> dict:
     resumen = await construir_resumen_pedido(draft.get("productos") or [])
-    nombre, direccion, ubicacion = _datos_despacho(draft, cliente)
+    nombre, direccion = _datos_despacho(draft, cliente)
     lineas_texto = "\n".join(
         f'- {linea["cantidad"]}x {linea["nombre"]} — {_formatear_clp(linea["subtotal"])}'
         for linea in resumen["lineas"]
     )
     bloques = [
         f"Resumen de tu pedido:\n{lineas_texto}\nTotal: {_formatear_clp(resumen['total'])}",
-        f"Nombre: {nombre}\nDirección de despacho: {direccion}\nUbicación: {ubicacion}",
+        f"Nombre: {nombre}\nDirección de despacho: {direccion}",
     ]
     if draft.get("notas"):
         bloques.append(f"Notas: {draft['notas']}")
@@ -512,6 +1526,33 @@ async def _responder_siguiente_paso(
     faltantes = _datos_faltantes(draft, cliente)
 
     if not faltantes:
+        no_registrados = _productos_no_registrados(draft)
+        if no_registrados:
+            # El draft tiene menos unidades de las que el cliente pidió en la
+            # conversación: no se muestra un resumen incompleto. Se le dice
+            # qué falta y se reabre "¿algo más?"; el registro se iguala al
+            # draft para no volver a reclamar lo mismo si responde que no.
+            logger.error(
+                "[order_flow] Productos pedidos sin registrar para phone=%s: %s (draft: %s)",
+                phone,
+                no_registrados,
+                draft.get("productos"),
+            )
+            draft = {
+                **draft,
+                "unidades_pedidas": _unidades_draft(draft),
+                "algo_mas_respondido": False,
+                "paso": "algo_mas",
+                "estado": "armando",
+            }
+            draft.pop("resumen", None)
+            save_draft(phone, draft)
+            faltantes_texto = ", ".join(f"{n}x {familia}" for familia, n in no_registrados.items())
+            return "algo_mas", MENSAJE_PRODUCTOS_NO_REGISTRADOS.format(
+                registrados=_resumen_productos_corto(draft.get("productos") or []),
+                faltantes=faltantes_texto,
+            )
+
         try:
             resumen = await _construir_resumen(draft, cliente)
         except ValueError:
@@ -521,7 +1562,7 @@ async def _responder_siguiente_paso(
             logger.exception("[order_flow] Productos inválidos en el draft de phone=%s", phone)
             draft = {**draft, "productos": [], "algo_mas_respondido": False}
             return await _responder_siguiente_paso(phone, draft, cliente)
-        draft = {**draft, "paso": "confirmacion", "estado": "esperando_confirmacion", "resumen": resumen}
+        draft = {**draft, "paso": "confirmacion", "estado": ESTADO_ESPERANDO_CONFIRMACION, "resumen": resumen}
         save_draft(phone, draft)
         return "confirmacion", resumen["texto_resumen"]
 
@@ -552,12 +1593,129 @@ async def _aplicar_resultado_llm(
 
     # Un pedido en curso nunca se vacía por lo que devuelva el LLM (saludos,
     # interjecciones, mensajes ambiguos): la única forma de vaciarlo es una
-    # cancelación EXPLÍCITA, que se intercepta antes en procesar_mensaje.
+    # cancelación EXPLÍCITA, que se intercepta antes en procesar_mensaje. Lo
+    # que el LLM extrae en este turno se FUSIONA con lo que ya había (ver
+    # _fusionar_productos), nunca lo reemplaza.
     productos_previos = draft_previo.get("productos") or []
-    productos = resultado.get("productos") or productos_previos
-    aclaracion_pendiente, productos = _resolver_aclaracion_bidon(
-        resultado.get("aclaracion_pendiente"), productos, mensaje
+    aclaracion_previa = draft_previo.get("aclaracion_pendiente")
+    aclaracion_llm = resultado.get("aclaracion_pendiente")
+    extraidos = resultado.get("productos") or []
+    respuesta_llm = resultado.get("respuesta_sugerida")
+    texto = _normalizar_texto(mensaje)
+    modificacion_explicita = bool(_PATRON_MODIFICACION.search(texto))
+
+    # Pregunta, queja o duda sobre el pedido en curso ("¿por qué asumes que
+    # quiero bidones de 12?"): se responde, nunca con "fuera de alcance". Si
+    # el LLM igual la marcó fuera de alcance, su texto no sirve y se usa uno
+    # genérico. En una duda no se agrega ni se deja pendiente nada: los
+    # productos que nombra son de lo que se queja, no un pedido nuevo.
+    hay_pedido_previo = bool(productos_previos or aclaracion_previa or draft_previo.get("pendientes_modelo"))
+    respuesta_duda = None
+    es_duda = (
+        hay_pedido_previo
+        and _es_pregunta_o_reclamo(mensaje)
+        and (intencion == "duda_pedido" or (intencion == "fuera_de_alcance" and _habla_del_pedido(texto)))
     )
+    propuesta_llm = None
+    if es_duda:
+        respuesta_duda = respuesta_llm if intencion == "duda_pedido" else None
+        propuesta_llm = resultado.get("correccion_propuesta") if intencion == "duda_pedido" else None
+        intencion = "duda_pedido"
+        resultado = {"intencion": intencion}
+        extraidos, aclaracion_llm, respuesta_llm, mensaje, texto = [], None, None, None, ""
+    catalogo = await _catalogo()
+    no_encontrados: list[dict] = []
+    lineas_codigo: list[dict] = []
+    familias_resueltas: set[str] = set()
+
+    # 1. Lo que estaba pendiente de aclarar (capacidad/variante de un bidón,
+    # modelo de un dispensador o promo) y este mensaje responde se resuelve
+    # en código; lo que el LLM haya extraído de esas familias en este turno
+    # se ignora para no sumarlo dos veces.
+    aclaracion_pendiente = aclaracion_previa
+    resolucion = _resolver_aclaracion_bidon(aclaracion_previa, mensaje)
+    if resolucion is not None:
+        aclaracion_pendiente = resolucion["aclaracion"]
+        lineas_codigo += resolucion["lineas"]
+        familias_resueltas.add("Bidón")
+        if resolucion["no_encontrado"]:
+            no_encontrados.append(
+                {"texto": resolucion["no_encontrado"], "opciones": []}
+            )
+    pendientes_modelo, lineas, resueltas = _resolver_pendientes_modelo(
+        draft_previo.get("pendientes_modelo") or [], mensaje, catalogo
+    )
+    lineas_codigo += lineas
+    familias_resueltas |= resueltas
+
+    # 2. Lo que extrajo el LLM: solo productos del catálogo y con atributos
+    # que el cliente dijo (nunca una capacidad o un modelo supuesto).
+    aceptados, nombres_no_encontrados = _validar_extraidos(extraidos, mensaje, productos_previos, catalogo)
+    no_encontrados += [
+        {"texto": f"«{nombre}»", "opciones": _sugerencias(nombre, None, catalogo)}
+        for nombre in nombres_no_encontrados
+    ]
+    productos, familias_modificadas = _fusionar_productos(
+        productos_previos, aceptados, mensaje, excluir_familias=frozenset(familias_resueltas)
+    )
+
+    # 3. Lo que el cliente mencionó y el LLM no extrajo (bien) no se descarta
+    # en silencio: se agrega si calza con un solo producto, queda pendiente
+    # si calza con varios, o se avisa que no existe. Con un pedido explícito
+    # de cambio ("cambia los nuevos por recarga") las menciones son los
+    # productos a cambiar, no productos nuevos: eso lo resuelve el LLM. En
+    # una consulta ("¿cuánto cuesta el dispensador?") no se está pidiendo
+    # nada.
+    bidon_mencionado = None
+    if intencion in ("consulta_precio", "consulta_pedidos", "duda_pedido"):
+        pass
+    elif not modificacion_explicita:
+        menciones = [m for m in _menciones_productos(texto) if m["familia"] not in familias_resueltas]
+        lineas, bidon_mencionado, nuevos_pendientes, sin_catalogo = _resolver_menciones(
+            menciones, aceptados, catalogo
+        )
+        lineas_codigo += lineas
+        pendientes_modelo += nuevos_pendientes
+        no_encontrados += sin_catalogo
+        if bidon_mencionado:
+            aclaracion_pendiente = _sumar_aclaraciones(aclaracion_pendiente, bidon_mencionado)
+    else:
+        # "ya no quiero los bidones" / "olvida el dispensador": descarta lo
+        # que esperaba aclaración de esa familia.
+        if aclaracion_pendiente and resolucion is None and _menciona_tipo("bidon", texto):
+            aclaracion_pendiente = None
+            familias_modificadas.add("Bidón")
+        descartados = [
+            p for p in pendientes_modelo if _menciona_tipo(_tipo_producto(p["familia"]), texto)
+        ]
+        pendientes_modelo = [p for p in pendientes_modelo if p not in descartados]
+        familias_modificadas |= {p["familia"] for p in descartados}
+
+    for linea in lineas_codigo:
+        _sumar_linea(productos, linea["nombre_producto"], linea["cantidad"])
+
+    # 4. Un bidón ambiguo que solo detectó el LLM (ej. "quiero 2 de 20"): su
+    # capacidad solo se acepta si el cliente la dijo. Si el código ya vio un
+    # bidón en el mensaje, manda el código (el LLM deja pendiente "2 bidones
+    # de 20 litros recarga" aunque esté completo).
+    codigo_vio_bidon = (
+        "Bidón" in familias_resueltas
+        or any(m["familia"] == "Bidón" for m in _menciones_productos(texto))
+        or any(_familia(item["nombre_producto"]) == "Bidón" for item in aceptados)
+    )
+    if aclaracion_llm and aclaracion_pendiente is None and not codigo_vio_bidon:
+        capacidad = aclaracion_llm.get("capacidad_litros")
+        if f"{capacidad}l" not in _atributos_mensaje(texto):
+            capacidad = None
+        aclaracion_pendiente = {
+            "capacidad_litros": capacidad,
+            "cantidad": max(1, _cantidad_valida(aclaracion_llm.get("cantidad"))),
+        }
+
+    if familias_resueltas or lineas_codigo:
+        # El texto del LLM pudo preguntar algo que el código ya resolvió.
+        respuesta_llm = None
+    hay_pendientes = bool(aclaracion_pendiente or pendientes_modelo or no_encontrados)
     productos_cambiaron = productos != productos_previos
 
     # Datos ya capturados nunca se pierden ni se vuelven a pedir: un valor
@@ -615,7 +1773,13 @@ async def _aplicar_resultado_llm(
         "ubicacion": draft_previo.get("ubicacion"),
         "ubicacion_rechazada": ubicacion_rechazada,
         "algo_mas_respondido": algo_mas_respondido,
+        "pendientes_modelo": pendientes_modelo,
+        # Solo de este turno: se recalcula en cada mensaje.
+        "no_encontrados": no_encontrados,
     }
+    nuevo_draft["unidades_pedidas"] = _actualizar_unidades_pedidas(
+        draft_previo, nuevo_draft, familias_modificadas
+    )
 
     # Salvaguarda de "sin productos no hay '¿algo más?' ni resumen": como
     # "producto" es siempre el primer dato faltante cuando la lista está
@@ -624,24 +1788,68 @@ async def _aplicar_resultado_llm(
     # producción llegó a preguntar "¿algo más?" sin productos). Se verifica
     # explícitamente para que un cambio futuro en el orden no lo rompa.
     paso, texto = await _responder_siguiente_paso(
-        phone, nuevo_draft, cliente, resultado.get("respuesta_sugerida"), quiere_agregar_algo
+        phone, nuevo_draft, cliente, respuesta_llm, quiere_agregar_algo
     )
     if not productos and paso != "producto":
         logger.error("[order_flow] Paso '%s' calculado sin productos para phone=%s", paso, phone)
         save_draft(phone, {**nuevo_draft, "paso": "producto", "estado": "armando"})
         paso, texto = "producto", PREGUNTA_PRODUCTO
 
-    if intencion in _INTENCIONES_RESPUESTA_LLM and resultado.get("respuesta_sugerida"):
+    # Con el pedido listo para confirmar, una respuesta a otra cosa (duda,
+    # tema fuera de alcance) no va pegada al resumen: va seguida de las
+    # opciones, y el pedido pasa a esperando_modificacion para que un "sí"
+    # suelto no lo confirme (solo se confirma justo después del resumen).
+    siguiente = PREGUNTA_OPCIONES_PEDIDO if paso == "confirmacion" else texto
+    correccion = None
+    if es_duda:
+        correccion = _validar_correccion(propuesta_llm, productos, catalogo)
+        if correccion:
+            # La pregunta final la arma el código desde la corrección validada,
+            # para que un "sí" responda exactamente a lo que quedó guardado.
+            explicacion = _sin_pregunta_final(respuesta_duda)
+            texto = f"{explicacion}\n\n{_pregunta_correccion(correccion, productos)}".strip()
+        else:
+            if propuesta_llm:
+                # El LLM ofreció algo que no existe en el catálogo (o no calza
+                # con el pedido): no se ofrece.
+                logger.info("[order_flow] Corrección propuesta descartada: %s", propuesta_llm)
+                respuesta_duda = None
+            respuesta = respuesta_duda or (
+                MENSAJE_DUDA_GENERICA.format(pedido=_resumen_productos_corto(productos))
+                if productos
+                else MENSAJE_DUDA_SIN_PRODUCTOS
+            )
+            texto = f"{respuesta}\n\n{siguiente}"
+    elif (
+        intencion in _INTENCIONES_RESPUESTA_LLM
+        and resultado.get("respuesta_sugerida")
+        # Si el cliente pidió algo que el código resolvió, agregó, dejó
+        # pendiente o no encontró en el catálogo, el "fuera de alcance" del
+        # LLM es un error: va la respuesta del código.
+        and not (intencion == "fuera_de_alcance" and (hay_pendientes or lineas_codigo or familias_resueltas))
+    ):
         # Consulta de precio/pedidos o tema fuera de alcance: se responde lo
         # que preguntó y, si hay un pedido en curso, se retoma el paso
-        # pendiente a continuación.
+        # pendiente a continuación (tras una consulta de precio sí se vuelve a
+        # mostrar el resumen). Si el cliente pidió algo que el código dejó
+        # pendiente o no encontró en el catálogo, va la pregunta del código
+        # (el LLM suele responder "fuera de alcance" sin decir qué producto
+        # no existe).
+        if intencion == "fuera_de_alcance":
+            texto = siguiente
         texto = (
             f"{resultado['respuesta_sugerida']}\n\n{texto}"
-            if productos
+            if productos or hay_pendientes
             else resultado["respuesta_sugerida"]
         )
     elif productos_previos and not productos_cambiaron and intencion != "pedido" and paso != "confirmacion":
         texto = f"Sigo con tu pedido de {_resumen_productos_corto(productos)}. {texto}"
+
+    if paso == "confirmacion" and "Resumen de tu pedido" not in texto:
+        save_draft(phone, {**(get_draft(phone) or nuevo_draft), "estado": ESTADO_ESPERANDO_MODIFICACION})
+    if correccion:
+        # Válida solo para el mensaje siguiente (ver procesar_mensaje).
+        save_draft(phone, {**(get_draft(phone) or nuevo_draft), "correccion_pendiente": correccion})
 
     if es_primer_turno:
         texto = f"{_saludo(cliente)} {_quitar_saludo_inicial(texto)}"
@@ -827,6 +2035,38 @@ async def _confirmar_pedido(phone: str, draft: dict | None) -> str:
     )
 
 
+async def _responder_a_correccion(
+    phone: str, draft: dict, cliente: dict | None, correccion: dict, mensaje: str | None
+) -> str | None:
+    """Respuesta del cliente a una corrección ofrecida por el bot. Devuelve
+    el texto a enviar, o None si el mensaje no responde la pregunta (la
+    corrección ya quedó descartada y el mensaje sigue el flujo normal)."""
+    if correccion.get("pide_cantidad"):
+        unidades = _unidades_respuesta(mensaje)
+        if unidades == "todas":
+            correccion = {**correccion, "pide_cantidad": False}
+        elif unidades is not None and len(correccion["cambios"]) == 1:
+            correccion = {
+                "cambios": [{**correccion["cambios"][0], "cantidad": unidades}],
+                "pide_cantidad": False,
+            }
+        else:
+            return None
+    elif _es_negativa_simple(mensaje):
+        save_draft(phone, {**draft, "estado": ESTADO_ESPERANDO_MODIFICACION})
+        return MENSAJE_CORRECCION_RECHAZADA
+    elif not _es_confirmacion_explicita(mensaje):
+        return None
+
+    productos = _aplicar_cambios_correccion(draft.get("productos") or [], correccion)
+    nuevo = {**draft, "productos": productos}
+    # Cambio pedido explícitamente: lo pedido pasa a ser lo que quedó.
+    nuevo["unidades_pedidas"] = _unidades_draft(nuevo)
+    paso, texto = await _responder_siguiente_paso(phone, nuevo, cliente)
+    logger.info("[order_flow] Corrección aplicada para phone=%s: %s", phone, correccion["cambios"])
+    return f"{MENSAJE_CORRECCION_APLICADA}\n\n{texto}"
+
+
 async def _es_cliente_nuevo(phone: str) -> bool:
     return not await _buscar_clientes(phone)
 
@@ -856,18 +2096,56 @@ async def procesar_mensaje(
         # de llamar al LLM y antes de cualquier otra rama del flujo, con
         # cualquier draft (con o sin productos). clear_draft(phone) borra el
         # draft completo, y como la tabla cliente solo se escribe al
-        # confirmar, cancelar no deja ningún cambio en cliente.
-        if draft is not None and _es_cancelacion_explicita(message_text):
-            clear_draft(phone)
-            return MENSAJE_PEDIDO_CANCELADO
+        # confirmar, cancelar no deja ningún cambio en cliente. Si no es claro
+        # que quiera cancelar (ver _intencion_cancelar), se le pregunta.
+        if draft is not None and message_type == "text":
+            cancelacion = _intencion_cancelar(
+                message_text, texto_libre=draft.get("paso") in _PASOS_TEXTO_LIBRE
+            )
+            if cancelacion == "cancelar":
+                clear_draft(phone)
+                return MENSAJE_PEDIDO_CANCELADO
+            if cancelacion == "duda":
+                if estado in (ESTADO_ESPERANDO_CONFIRMACION, ESTADO_ESPERANDO_MODIFICACION):
+                    # Tras esta pregunta un "sí" no debe confirmar el pedido.
+                    save_draft(phone, {**draft, "estado": ESTADO_ESPERANDO_MODIFICACION})
+                return PREGUNTA_CANCELAR
+
+        # Corrección que el bot ofreció en su último mensaje ("¿Quieres que
+        # cambie ... por Bidón 20L ...?"): vale solo para este mensaje. Se
+        # aplica con un sí explícito (o con la cantidad, si se preguntó
+        # cuántas), "no" la descarta y pregunta qué cambiar, y cualquier otra
+        # cosa la descarta y sigue el flujo normal.
+        correccion = draft.pop("correccion_pendiente", None) if draft else None
+        if correccion:
+            save_draft(phone, draft)
+            if message_type == "text":
+                respuesta = await _responder_a_correccion(phone, draft, cliente, correccion, message_text)
+                if respuesta is not None:
+                    return respuesta
 
         if message_type == "location":
             return await _aplicar_ubicacion(phone, location, draft, cliente)
 
-        if estado == "esperando_confirmacion":
-            texto_normalizado = (message_text or "").strip().lower()
-            if texto_normalizado in CONFIRMACIONES:
+        # Solo se confirma con un sí explícito y si el último mensaje del bot
+        # fue el resumen. Cualquier otra respuesta no confirma: una negativa
+        # pregunta qué cambiar, y el resto (cambios, consultas) pasa al LLM,
+        # que vuelve a armar el resumen si no falta nada.
+        if estado == ESTADO_ESPERANDO_CONFIRMACION:
+            if _es_confirmacion_explicita(message_text):
                 return await _confirmar_pedido(phone, draft)
+            if _es_negativa_simple(message_text):
+                save_draft(phone, {**draft, "estado": ESTADO_ESPERANDO_MODIFICACION})
+                return MENSAJE_NO_CONFIRMADO
+        elif estado == ESTADO_ESPERANDO_MODIFICACION:
+            if _es_confirmacion_explicita(message_text):
+                # Respondió "no" al resumen y ahora "sí": no se confirma (¿sí a
+                # qué?). Se muestra de nuevo el resumen para que confirme
+                # explícitamente.
+                paso, texto = await _responder_siguiente_paso(phone, draft, cliente)
+                return f"{PREFIJO_REPETIR_RESUMEN}\n\n{texto}" if paso == "confirmacion" else texto
+            if _es_negativa_simple(message_text):
+                return PREGUNTA_CANCELAR
 
         resultado = await _interpretar_con_debug(
             phone, message_text or "", cliente is None, _contexto_desde_draft(draft)

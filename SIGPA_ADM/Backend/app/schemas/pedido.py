@@ -21,6 +21,7 @@ class PedidoOut(BaseModel):
     actualizado_en: datetime
     latitud: float | None = None
     longitud: float | None = None
+    orden_entrega: int | None = None
 
 
 class DetallePedidoLineaOut(BaseModel):

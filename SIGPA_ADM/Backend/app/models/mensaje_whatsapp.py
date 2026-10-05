@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import DateTime, ForeignKey, String, Text
+from sqlalchemy import DateTime, ForeignKey, Index, String, Text, text
 from sqlalchemy import Enum as SAEnum
 from sqlalchemy.orm import Mapped, mapped_column
 from sqlalchemy.sql import func
@@ -12,6 +12,16 @@ from app.core.database import Base
 
 class MensajeWhatsApp(Base):
     __tablename__ = "mensaje_whatsapp"
+    __table_args__ = (
+        # Idempotencia del webhook: un mismo mensaje entrante (wamid) se
+        # registra y procesa una sola vez (ver registrar_mensaje_entrante).
+        Index(
+            "uq_mensaje_whatsapp_entrante_meta_message_id",
+            "meta_message_id",
+            unique=True,
+            postgresql_where=text("direccion = 'entrante' AND meta_message_id IS NOT NULL"),
+        ),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True)
     cliente_id: Mapped[int | None] = mapped_column(ForeignKey("cliente.id"), nullable=True)

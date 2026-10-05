@@ -237,7 +237,7 @@ async def _caso_direccion_nueva(ctx: dict, v: Verificador, con_ubicacion: bool) 
     v.check("Los Pinos 456" in respuestas[-1], "resumen con la dirección nueva")
     if not con_ubicacion:
         v.check("ubicación de whatsapp" not in respuestas[3].lower(), "tras el rechazo no vuelve a pedir la ubicación")
-        v.check("no compartida" in respuestas[-1].lower(), "resumen indica que no hay ubicación")
+        v.check("ubicación" not in respuestas[-1].lower(), "el resumen no muestra la ubicación")
     respuestas += await _conversar(phone, ["si"])
     v.check("confirmado" in respuestas[-1].lower(), "pedido confirmado")
     v.check(not any(_pide_nombre(r) for r in respuestas), "nunca pide el nombre")
@@ -341,7 +341,7 @@ async def caso_h(ctx: dict, v: Verificador) -> None:
     v.check("Resumen de tu pedido" in resumen, "muestra el resumen")
     v.check(f"Nombre: {CLIENTE_EXISTENTE['nombre']}" in resumen, "incluye el nombre")
     v.check(f"Dirección de despacho: {CLIENTE_EXISTENTE['direccion']}" in resumen, "incluye la dirección")
-    v.check("Ubicación: registrada" in resumen, "indica la ubicación")
+    v.check("Ubicación" not in resumen, "no muestra la ubicación")
     v.check("Total:" in resumen and "Bidón 20L Recarga" in resumen, "incluye productos y total")
     await _conversar(phone, ["cancelar"])
 
@@ -371,13 +371,15 @@ async def caso_i(ctx: dict, v: Verificador) -> None:
 async def caso_j(ctx: dict, v: Verificador) -> None:
     """Falla a mitad de _confirmar_pedido (producto inexistente al crear el
     detalle, DESPUÉS de crear el cliente y su auditoría en la sesión): debe
-    hacer rollback de todo."""
+    hacer rollback de todo. El producto del draft es válido (con uno inválido
+    el flujo ni siquiera llega a confirmar, ver _datos_faltantes); el
+    inexistente va solo en resumen.lineas, que es lo que usa el detalle."""
     phone = TELEFONO_NUEVO_F
     auditoria_desde = await _max_auditoria_id()
     save_draft(
         phone,
         {
-            "productos": [{"nombre_producto": "Producto Inexistente", "cantidad": 1}],
+            "productos": [{"nombre_producto": "Bidón 20L Recarga", "cantidad": 1}],
             "nombre_cliente": "Rollback Test",
             "usa_direccion_habitual": False,
             "direccion_texto": "Calle Rollback 1",
@@ -426,7 +428,7 @@ CASOS = [
     ("e", "Cliente nuevo: nombre pedido una vez, cliente creado con todos sus datos", caso_e),
     ("f", "Cancelación antes de confirmar (nuevo y existente): cliente no se crea ni modifica", caso_f),
     ("g", "'quiero hacer un pedido' sin producto: no pregunta 'algo más', pregunta producto", caso_g),
-    ("h", "Resumen incluye nombre, dirección y ubicación", caso_h),
+    ("h", "Resumen incluye nombre y dirección (sin ubicación)", caso_h),
     ("i", "Teléfono en más de un cliente: escala a la ejecutiva", caso_i),
     ("j", "Falla al crear el pedido: rollback, no queda cliente ni auditoría", caso_j),
     ("k", "Paso '¿algo más?': 'Si' pide qué agregar, se agrega producto, 'no' muestra resumen", caso_k),

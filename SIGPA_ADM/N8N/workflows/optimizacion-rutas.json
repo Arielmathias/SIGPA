@@ -1,0 +1,648 @@
+{
+  "id": "SigpaRutasEP0401",
+  "name": "SIGPA - Optimización de rutas",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "sigpa-ruta",
+        "authentication": "headerAuth",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "a1000000-0000-4000-8000-000000000001",
+      "name": "Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        0,
+        300
+      ],
+      "webhookId": "5c1f3c2e-7a4b-4f0e-9d6a-0e9b8f6c2a11",
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "REEMPLAZAR_WEBHOOK",
+          "name": "SIGPA X-Route-Secret"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "c1",
+              "name": "DEPOT_LAT",
+              "value": -33.014677,
+              "type": "number"
+            },
+            {
+              "id": "c2",
+              "name": "DEPOT_LON",
+              "value": -71.505148,
+              "type": "number"
+            },
+            {
+              "id": "c3",
+              "name": "CONFIDENCE_MIN",
+              "value": 0.6,
+              "type": "number"
+            },
+            {
+              "id": "c4",
+              "name": "PAIS",
+              "value": "CL",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "a1000000-0000-4000-8000-000000000002",
+      "name": "Config",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        220,
+        300
+      ],
+      "notes": "Completar DEPOT_LAT y DEPOT_LON con las coordenadas del depósito. Con 0/0 el workflow responde 500 configuracion_incompleta.",
+      "notesInFlow": true
+    },
+    {
+      "parameters": {
+        "jsCode": "// Valida la entrada y separa paradas con coordenadas de las que hay que geocodificar.\n// Nunca lanza errores: si algo está mal devuelve valido=false para que se responda.\nconst cfg = $('Config').first().json;\nconst body = $('Webhook').first().json.body;\n\nconst enRango = (lat, lon) =>\n  Number.isFinite(lat) && Number.isFinite(lon) &&\n  lat >= -90 && lat <= 90 && lon >= -180 && lon <= 180;\nconst aNumero = (v) => (v === null || v === undefined || v === '' ? NaN : Number(v));\nconst invalido = (status, error, detalle) =>\n  [{ json: { valido: false, status, error, detalle } }];\n\nconst depotLat = aNumero(cfg.DEPOT_LAT);\nconst depotLon = aNumero(cfg.DEPOT_LON);\nif (!enRango(depotLat, depotLon) || (depotLat === 0 && depotLon === 0)) {\n  return invalido(500, 'configuracion_incompleta', 'Completar DEPOT_LAT y DEPOT_LON en el nodo Config');\n}\n\nif (!body || !Array.isArray(body.paradas)) {\n  return invalido(400, 'entrada_invalida', 'Se esperaba {\"paradas\": [...]}');\n}\n\nconst resueltas = [];\nconst pendientes = [];\nconst sin_resolver = [];\nconst ids_recibidos = [];\nconst vistos = new Set();\n\nfor (const p of body.paradas) {\n  let id = p ? p.pedido_id : undefined;\n  if (typeof id === 'string' && /^\\d+$/.test(id)) id = Number(id);\n  if (!Number.isInteger(id)) {\n    return invalido(400, 'entrada_invalida', 'pedido_id debe ser entero: ' + JSON.stringify(p));\n  }\n  // Un pedido_id repetido se considera una sola parada (la primera).\n  if (vistos.has(id)) continue;\n  vistos.add(id);\n  ids_recibidos.push(id);\n\n  const lat = aNumero(p.latitud);\n  const lon = aNumero(p.longitud);\n  const direccion = typeof p.direccion_texto === 'string' ? p.direccion_texto.trim() : '';\n\n  if (enRango(lat, lon)) {\n    resueltas.push({ pedido_id: id, latitud: lat, longitud: lon });\n  } else if (direccion) {\n    pendientes.push({ pedido_id: id, direccion_texto: direccion });\n  } else {\n    sin_resolver.push({ pedido_id: id, motivo: 'dirección no encontrada' });\n  }\n}\n\nreturn [{ json: { valido: true, ids_recibidos, resueltas, pendientes, sin_resolver } }];"
+      },
+      "id": "a1000000-0000-4000-8000-000000000003",
+      "name": "Normalizar",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        440,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "i1",
+              "leftValue": "={{ $json.valido }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "looseTypeValidation": true,
+        "options": {}
+      },
+      "id": "a1000000-0000-4000-8000-000000000004",
+      "name": "¿Entrada válida?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        660,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { error: $json.error, detalle: $json.detalle } }}",
+        "options": {
+          "responseCode": "={{ $json.status }}"
+        }
+      },
+      "id": "a1000000-0000-4000-8000-000000000005",
+      "name": "Responder error de entrada",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        880,
+        520
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "i2",
+              "leftValue": "={{ $json.pendientes.length > 0 }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "looseTypeValidation": true,
+        "options": {}
+      },
+      "id": "a1000000-0000-4000-8000-000000000006",
+      "name": "¿Hay que geocodificar?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        880,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Un item por parada a geocodificar, para que el HTTP Request las procese de a una.\nreturn $input.first().json.pendientes.map((p) => ({ json: p }));"
+      },
+      "id": "a1000000-0000-4000-8000-000000000007",
+      "name": "Separar pendientes",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1100,
+        80
+      ]
+    },
+    {
+      "parameters": {
+        "url": "https://api.openrouteservice.org/geocode/search",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "text",
+              "value": "={{ $json.direccion_texto }}"
+            },
+            {
+              "name": "boundary.country",
+              "value": "={{ $('Config').first().json.PAIS }}"
+            },
+            {
+              "name": "focus.point.lat",
+              "value": "={{ $('Config').first().json.DEPOT_LAT }}"
+            },
+            {
+              "name": "focus.point.lon",
+              "value": "={{ $('Config').first().json.DEPOT_LON }}"
+            },
+            {
+              "name": "size",
+              "value": "1"
+            }
+          ]
+        },
+        "options": {
+          "batching": {
+            "batch": {
+              "batchSize": 1,
+              "batchInterval": 1500
+            }
+          },
+          "timeout": 8000
+        }
+      },
+      "id": "a1000000-0000-4000-8000-000000000008",
+      "name": "Geocodificar (ORS)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1320,
+        80
+      ],
+      "onError": "continueRegularOutput",
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "REEMPLAZAR_ORS",
+          "name": "OpenRouteService API key"
+        }
+      },
+      "notes": "De a una parada, 1500 ms entre requests (cuota gratuita). Un error no detiene el workflow.",
+      "notesInFlow": true
+    },
+    {
+      "parameters": {
+        "jsCode": "// Junta el resultado de la geocodificación con las paradas que ya tenían coordenadas.\nconst cfg = $('Config').first().json;\nconst base = $('Normalizar').first().json;\nconst pendientes = $('Separar pendientes').all().map((i) => i.json);\nconst respuestas = $input.all();\nconst minConfianza = Number(cfg.CONFIDENCE_MIN);\n\nconst resueltas = [...base.resueltas];\nconst sin_resolver = [...base.sin_resolver];\n\npendientes.forEach((p, i) => {\n  const r = respuestas[i] ? respuestas[i].json : null;\n  if (!r || r.error || !Array.isArray(r.features)) {\n    sin_resolver.push({ pedido_id: p.pedido_id, motivo: 'error de geocodificación' });\n    return;\n  }\n  const f = r.features[0];\n  const coords = f && f.geometry && f.geometry.coordinates;\n  if (!f || !Array.isArray(coords) || coords.length < 2) {\n    sin_resolver.push({ pedido_id: p.pedido_id, motivo: 'dirección no encontrada' });\n    return;\n  }\n  const props = f.properties || {};\n  // El confidence de ORS no basta: una dirección inventada puede volver con confidence 1 y\n  // match_type \"exact\" apuntando al centroide de otra calle. Solo se acepta un punto exacto.\n  if (props.layer !== 'address') {\n    sin_resolver.push({ pedido_id: p.pedido_id, motivo: 'dirección no encontrada con precisión suficiente' });\n    return;\n  }\n  const confianza = Number(props.confidence);\n  if (!(confianza >= minConfianza)) {\n    sin_resolver.push({ pedido_id: p.pedido_id, motivo: 'dirección ambigua' });\n    return;\n  }\n  // ORS devuelve [lon, lat].\n  const lon = Number(coords[0]);\n  const lat = Number(coords[1]);\n  if (!(lat >= -90 && lat <= 90 && lon >= -180 && lon <= 180)) {\n    sin_resolver.push({ pedido_id: p.pedido_id, motivo: 'error de geocodificación' });\n    return;\n  }\n  resueltas.push({ pedido_id: p.pedido_id, latitud: lat, longitud: lon });\n});\n\nreturn [{ json: { ids_recibidos: base.ids_recibidos, resueltas, sin_resolver } }];"
+      },
+      "id": "a1000000-0000-4000-8000-000000000009",
+      "name": "Evaluar geocodificación",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1540,
+        80
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Llega desde Normalizar (sin geocodificar) o desde Evaluar geocodificación; ambos con la misma forma.\nconst cfg = $('Config').first().json;\nconst d = $input.first().json;\nconst depot = [Number(cfg.DEPOT_LON), Number(cfg.DEPOT_LAT)];\n\nconst body_optimizacion = {\n  vehicles: [{ id: 1, profile: 'driving-car', start: depot, end: depot }],\n  jobs: d.resueltas.map((p) => ({ id: p.pedido_id, location: [p.longitud, p.latitud] })),\n};\n\nreturn [{\n  json: {\n    ids_recibidos: d.ids_recibidos,\n    resueltas: d.resueltas,\n    sin_resolver: d.sin_resolver,\n    body_optimizacion,\n  },\n}];"
+      },
+      "id": "a1000000-0000-4000-8000-00000000000a",
+      "name": "Preparar optimización",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1760,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "i3",
+              "leftValue": "={{ $json.resueltas.length > 0 }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "looseTypeValidation": true,
+        "options": {}
+      },
+      "id": "a1000000-0000-4000-8000-00000000000b",
+      "name": "¿Hay paradas resueltas?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1980,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.openrouteservice.org/optimization",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.body_optimizacion) }}",
+        "options": {
+          "timeout": 20000
+        }
+      },
+      "id": "a1000000-0000-4000-8000-00000000000c",
+      "name": "Optimizar (ORS)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2200,
+        100
+      ],
+      "onError": "continueErrorOutput",
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "REEMPLAZAR_ORS",
+          "name": "OpenRouteService API key"
+        }
+      },
+      "notes": "Timeout, 429, 4xx o 5xx salen por la rama de error -> 502.",
+      "notesInFlow": true
+    },
+    {
+      "parameters": {
+        "jsCode": "// Arma {ruta, sin_resolver} y verifica el contrato antes de responder.\n// Si algo no cuadra, valido=false y se responde 502 (nunca una ruta parcial).\nconst prep = $('Preparar optimización').first().json;\nconst opt = $input.first().json;\n\nconst porId = new Map(prep.resueltas.map((p) => [p.pedido_id, p]));\nconst ruta = [];\nconst sin_resolver = [...prep.sin_resolver];\nconst errores = [];\n\nif (prep.resueltas.length > 0) {\n  if (!opt || !Array.isArray(opt.routes) || (opt.code !== undefined && opt.code !== 0)) {\n    errores.push('respuesta de optimización inesperada');\n  } else {\n    const steps = opt.routes[0] && Array.isArray(opt.routes[0].steps) ? opt.routes[0].steps : [];\n    const enRuta = new Set();\n    for (const s of steps) {\n      if (s.type !== 'job') continue;\n      const p = porId.get(s.id);\n      if (!p || enRuta.has(s.id)) {\n        errores.push('job desconocido o repetido: ' + s.id);\n        continue;\n      }\n      enRuta.add(s.id);\n      // Se devuelven las coordenadas propias (las recibidas o las geocodificadas).\n      ruta.push({ pedido_id: p.pedido_id, orden_entrega: ruta.length + 1, latitud: p.latitud, longitud: p.longitud });\n    }\n    // Lo que no quedó en la ruta (unassigned u omitido) va a sin_resolver.\n    for (const p of prep.resueltas) {\n      if (!enRuta.has(p.pedido_id)) {\n        sin_resolver.push({ pedido_id: p.pedido_id, motivo: 'no asignable en la optimización' });\n      }\n    }\n  }\n}\n\n// Verificación del contrato.\nconst apariciones = new Map();\nfor (const x of [...ruta, ...sin_resolver]) {\n  apariciones.set(x.pedido_id, (apariciones.get(x.pedido_id) || 0) + 1);\n}\nfor (const id of prep.ids_recibidos) {\n  if (apariciones.get(id) !== 1) errores.push('pedido_id ' + id + ' aparece ' + (apariciones.get(id) || 0) + ' veces');\n}\nfor (const id of apariciones.keys()) {\n  if (!prep.ids_recibidos.includes(id)) errores.push('pedido_id no recibido: ' + id);\n}\nruta.forEach((r, i) => {\n  if (r.orden_entrega !== i + 1) errores.push('orden_entrega inválido en ' + r.pedido_id);\n  if (!(r.latitud >= -90 && r.latitud <= 90 && r.longitud >= -180 && r.longitud <= 180)) {\n    errores.push('coordenadas fuera de rango en ' + r.pedido_id);\n  }\n});\n\nreturn [{ json: { valido: errores.length === 0, errores, respuesta: { ruta, sin_resolver } } }];"
+      },
+      "id": "a1000000-0000-4000-8000-00000000000d",
+      "name": "Armar respuesta",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2420,
+        260
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "i4",
+              "leftValue": "={{ $json.valido }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "looseTypeValidation": true,
+        "options": {}
+      },
+      "id": "a1000000-0000-4000-8000-00000000000e",
+      "name": "¿Contrato válido?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        2640,
+        260
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ $json.respuesta }}",
+        "options": {
+          "responseCode": 200
+        }
+      },
+      "id": "a1000000-0000-4000-8000-00000000000f",
+      "name": "Responder ruta (200)",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        2860,
+        160
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "{\"error\": \"optimizacion_fallida\"}",
+        "options": {
+          "responseCode": 502
+        }
+      },
+      "id": "a1000000-0000-4000-8000-000000000010",
+      "name": "Responder optimización fallida (502)",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        2860,
+        400
+      ]
+    }
+  ],
+  "connections": {
+    "Webhook": {
+      "main": [
+        [
+          {
+            "node": "Config",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Config": {
+      "main": [
+        [
+          {
+            "node": "Normalizar",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalizar": {
+      "main": [
+        [
+          {
+            "node": "¿Entrada válida?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "¿Entrada válida?": {
+      "main": [
+        [
+          {
+            "node": "¿Hay que geocodificar?",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Responder error de entrada",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "¿Hay que geocodificar?": {
+      "main": [
+        [
+          {
+            "node": "Separar pendientes",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Preparar optimización",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Separar pendientes": {
+      "main": [
+        [
+          {
+            "node": "Geocodificar (ORS)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Geocodificar (ORS)": {
+      "main": [
+        [
+          {
+            "node": "Evaluar geocodificación",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Evaluar geocodificación": {
+      "main": [
+        [
+          {
+            "node": "Preparar optimización",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Preparar optimización": {
+      "main": [
+        [
+          {
+            "node": "¿Hay paradas resueltas?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "¿Hay paradas resueltas?": {
+      "main": [
+        [
+          {
+            "node": "Optimizar (ORS)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Armar respuesta",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Optimizar (ORS)": {
+      "main": [
+        [
+          {
+            "node": "Armar respuesta",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Responder optimización fallida (502)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Armar respuesta": {
+      "main": [
+        [
+          {
+            "node": "¿Contrato válido?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "¿Contrato válido?": {
+      "main": [
+        [
+          {
+            "node": "Responder ruta (200)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Responder optimización fallida (502)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {
+    "Webhook": [
+      {
+        "json": {
+          "headers": {
+            "content-type": "application/json"
+          },
+          "params": {},
+          "query": {},
+          "body": {
+            "paradas": [
+              {
+                "pedido_id": 101,
+                "direccion_texto": "Santa María 793, Valpariso",
+                "latitud": -32.8812,
+                "longitud": -71.2486
+              },
+              {
+                "pedido_id": 102,
+                "direccion_texto": "Av. Libertad 1200, Viña del Mar",
+                "latitud": -33.0245,
+                "longitud": -71.5518
+              },
+              {
+                "pedido_id": 103,
+                "direccion_texto": "Avenida Valparaíso 541, Viña del Mar",
+                "latitud": null,
+                "longitud": null
+              },
+              {
+                "pedido_id": 104,
+                "direccion_texto": "Pasaje Zxqwyrt 98765, Villa Inexistente",
+                "latitud": null,
+                "longitud": null
+              }
+            ]
+          },
+          "webhookUrl": "http://localhost:5678/webhook/sigpa-ruta",
+          "executionMode": "test"
+        }
+      }
+    ]
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "executionTimeout": 40,
+    "timezone": "America/Santiago"
+  },
+  "active": false,
+  "tags": []
+}
