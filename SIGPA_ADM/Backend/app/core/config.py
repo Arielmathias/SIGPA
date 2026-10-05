@@ -24,6 +24,8 @@ class Settings(BaseSettings):
     SUPABASE_URL: str = ""
     SUPABASE_ANON_KEY: str = ""
 
+    CORS_ORIGINS: str = "http://localhost:5173"
+
     EJECUTIVA_PHONE: str = "56957721243"
 
     INTERNAL_CRON_SECRET: str = ""
@@ -35,6 +37,11 @@ class Settings(BaseSettings):
     N8N_ROUTE_TIMEOUT_SECONDS: float = 45
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
+
+    @property
+    def cors_origins_list(self) -> list[str]:
+        # Convierte el string de la variable de entorno en una lista
+        return [origen.strip() for origen in self.CORS_ORIGINS.split(",") if origen.strip()]
 
 
 settings = Settings()
