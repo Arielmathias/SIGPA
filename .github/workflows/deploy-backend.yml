@@ -1,0 +1,16 @@
+# Dispara un deploy en Render cuando hay cambios del backend en main
+name: Deploy backend a Render
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "SIGPA_ADM/Backend/**"   # mismo criterio que el Root Directory de Render
+  workflow_dispatch:              # permite lanzarlo a mano desde la pestaña Actions
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Llamar al deploy hook de Render
+        run: curl -fsS -X POST "${{ secrets.RENDER_DEPLOY_HOOK }}"
