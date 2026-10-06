@@ -18,6 +18,7 @@ from app.models.pedido import Pedido
 from app.models.producto import Producto
 from app.schemas.pedido import (
     CambiarEstadoRequest,
+    CorregirCoordenadasRequest,
     DetallePedidoLineaOut,
     HistorialEstadoOut,
     PedidoCreate,
@@ -393,6 +394,55 @@ async def cambiar_estado_pedido(
             entidad="pedido",
             entidad_id=pedido.id,
             accion="cambiar_estado",
+            antes=snapshot_antes,
+            despues=construir_snapshot(pedido),
+        )
+
+        return _pedido_a_out(pedido)
+
+@router.post("/{id}/coordenadas", response_model=PedidoOut)
+async def corregir_coordenadas_pedido(
+    id: int, datos: CorregirCoordenadasRequest, current_user: dict = Depends(get_current_user)
+):
+    """
+    Historia #113: corrige a mano las coordenadas de un pedido con dirección
+    por revisar. Limpia la marca de revisión, y como el pedido ya trae
+    latitud y longitud, n8n no lo vuelve a geocodificar en la próxima ruta.
+    """
+    async with SessionLocal() as session:
+        result = await session.execute(
+            select(Pedido)
+            .where(Pedido.id == id)
+            .options(
+                selectinload(Pedido.cliente).selectinload(Cliente.sector).selectinload(Sector.comuna)
+            )
+            .with_for_update(of=Pedido)
+        )
+        pedido = result.scalar_one_or_none()
+
+        if pedido is None:
+            raise HTTPException(status_code=404, detail="Pedido no encontrado")
+
+        if pedido.motivo_revision_direccion is None:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="El pedido no tiene una dirección pendiente de revisión",
+            )
+
+        snapshot_antes = construir_snapshot(pedido)
+
+        pedido.latitud = datos.latitud
+        pedido.longitud = datos.longitud
+        pedido.motivo_revision_direccion = None
+        pedido.actualizado_en = datetime.utcnow()
+
+        await session.commit()
+
+        await registrar_auditoria(
+            usuario=current_user.get("email"),
+            entidad="pedido",
+            entidad_id=pedido.id,
+            accion="corregir_coordenadas",
             antes=snapshot_antes,
             despues=construir_snapshot(pedido),
         )

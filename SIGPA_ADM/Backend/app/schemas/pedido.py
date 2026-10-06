@@ -71,6 +71,13 @@ class RegistrarEntregaRequest(BaseModel):
 class CambiarEstadoRequest(BaseModel):
     estado: EstadoPedido
 
+class CorregirCoordenadasRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    # Historia #113: rangos válidos de coordenadas geográficas
+    latitud: float = Field(ge=-90, le=90)
+    longitud: float = Field(ge=-180, le=180)
+
 # Historia #70: un cambio de estado en GET /pedidos/{id}/historial
 class HistorialEstadoOut(BaseModel):
     estado_anterior: EstadoPedido | None  # None cuando el pedido se creó con ese estado
