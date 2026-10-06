@@ -25,6 +25,7 @@ import unicodedata
 from difflib import SequenceMatcher, get_close_matches
 
 from sqlalchemy import select
+from sqlalchemy.orm import selectinload
 
 from app.core.config import settings
 from app.core.database import SessionLocal
@@ -2070,6 +2071,98 @@ async def _responder_a_correccion(
 async def _es_cliente_nuevo(phone: str) -> bool:
     return not await _buscar_clientes(phone)
 
+# ---------------------------------------------------------------------------
+# Historia #64: ofrecer repetir el último pedido entregado
+# ---------------------------------------------------------------------------
+
+
+async def _ultimo_pedido_entregado(cliente_id: int) -> list[dict]:
+    """Líneas ({nombre_producto, cantidad}) del último pedido ENTREGADO del
+    cliente, o [] si no tiene historial. Se repite lo solicitado y se omiten
+    los productos que ya no están en el catálogo."""
+    async with SessionLocal() as session:
+        result = await session.execute(
+            select(Pedido)
+            .where(Pedido.cliente_id == cliente_id, Pedido.estado == EstadoPedido.ENTREGADO)
+            .options(selectinload(Pedido.detalles).selectinload(DetallePedido.producto))
+            .order_by(Pedido.creado_en.desc(), Pedido.id.desc())
+            .limit(1)
+        )
+        pedido = result.scalar_one_or_none()
+
+    if pedido is None:
+        return []
+    return [
+        {"nombre_producto": detalle.producto.nombre, "cantidad": detalle.cantidad_solicitada}
+        for detalle in pedido.detalles
+        if detalle.producto.nombre in CATALOGO_NOMBRES and detalle.cantidad_solicitada > 0
+    ]
+
+
+def _es_saludo(texto: str | None) -> bool:
+    return _empieza_con(_normalizar_texto(texto), ("hola", "holi", "buenas", "buenos", "buen dia", "hey"))
+
+
+async def _ofrecer_repetir_pedido(
+    phone: str, cliente: dict | None, resultado: dict, mensaje: str | None
+) -> str | None:
+    """Primer mensaje de un cliente existente que todavía no pidió nada: si
+    tiene un pedido entregado, se le ofrece repetirlo. Devuelve el texto de la
+    oferta, o None si no corresponde ofrecerla."""
+    texto = _normalizar_texto(mensaje)
+    intencion = resultado.get("intencion")
+    if (
+        cliente is None
+        or intencion in ("consulta_precio", "consulta_pedidos", "duda_pedido")
+        or not (intencion == "pedido" or _es_saludo(mensaje))
+        or resultado.get("productos")
+        or resultado.get("aclaracion_pendiente")
+        or _menciona_algun_producto(texto)
+    ):
+        return None
+
+    lineas = await _ultimo_pedido_entregado(cliente["id"])
+    if not lineas:
+        return None
+
+    # La oferta queda en el draft (sin productos) hasta que responda.
+    save_draft(
+        phone,
+        {"paso": "producto", "estado": "armando", "productos": [], "oferta_repetir": lineas},
+    )
+    return (
+        f"{_saludo(cliente)} ¿Quieres repetir tu último pedido "
+        f"({_resumen_productos_corto(lineas)})? Responde SÍ, o cuéntame qué necesitas."
+    )
+
+
+async def _responder_a_oferta_repetir(
+    phone: str, draft: dict, cliente: dict | None, mensaje: str | None
+) -> str | None:
+    """Respuesta a la oferta de repetir el último pedido. Devuelve el texto a
+    enviar, o None si el mensaje no responde la oferta (la oferta ya quedó
+    descartada y el mensaje sigue el flujo normal)."""
+    lineas = draft["oferta_repetir"]
+    base = {clave: valor for clave, valor in draft.items() if clave != "oferta_repetir"}
+    texto = _normalizar_texto(mensaje)
+
+    if _es_negativa_simple(mensaje):
+        save_draft(phone, base)
+        return f"Entendido. {PREGUNTA_PRODUCTO}"
+
+    acepta = (
+        (_es_afirmativa(mensaje) or "repet" in texto or "lo mismo" in texto)
+        and not _empieza_con(texto, ("no",))
+        and not _menciona_algun_producto(texto)
+    )
+    if not acepta:
+        save_draft(phone, base)
+        return None
+
+    nuevo = {**base, "productos": lineas}
+    nuevo["unidades_pedidas"] = _unidades_draft(nuevo)
+    _, respuesta = await _responder_siguiente_paso(phone, nuevo, cliente)
+    return f"Perfecto, repetimos tu último pedido.\n\n{respuesta}"
 
 async def procesar_mensaje(
     phone: str,
@@ -2091,6 +2184,14 @@ async def procesar_mensaje(
 
         draft = get_draft(phone)
         estado = draft.get("estado") if draft else None
+
+        # Historia #64: respuesta a la oferta de repetir el último pedido.
+        if draft is not None and draft.get("oferta_repetir") and message_type == "text":
+            respuesta = await _responder_a_oferta_repetir(phone, draft, cliente, message_text)
+            if respuesta is not None:
+                return respuesta
+            draft = get_draft(phone)
+            estado = draft.get("estado") if draft else None
 
         # Cancelación EXPLÍCITA del pedido/estado en curso: se intercepta antes
         # de llamar al LLM y antes de cualquier otra rama del flujo, con
@@ -2150,4 +2251,11 @@ async def procesar_mensaje(
         resultado = await _interpretar_con_debug(
             phone, message_text or "", cliente is None, _contexto_desde_draft(draft)
         )
+
+        # Historia #64: primer mensaje de un cliente con historial.
+        if draft is None and message_type == "text":
+            oferta = await _ofrecer_repetir_pedido(phone, cliente, resultado, message_text)
+            if oferta is not None:
+                return oferta
+
         return await _aplicar_resultado_llm(phone, resultado, draft, cliente, message_text)
