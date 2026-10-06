@@ -38,7 +38,7 @@ class PedidoDetalleOut(PedidoOut):
 
 
 class PedidoUpdate(BaseModel):
-    estado: EstadoPedido | None = None
+    model_config = ConfigDict(extra="forbid")
     direccion_despacho: str | None = None
     latitud: float | None = None
     longitud: float | None = None
@@ -65,3 +65,15 @@ class LineaEntregaRequest(BaseModel):
 
 class RegistrarEntregaRequest(BaseModel):
     lineas: list[LineaEntregaRequest] = Field(min_length=1)
+
+
+class CambiarEstadoRequest(BaseModel):
+    estado: EstadoPedido
+
+# Historia #70: un cambio de estado en GET /pedidos/{id}/historial
+class HistorialEstadoOut(BaseModel):
+    estado_anterior: EstadoPedido | None  # None cuando el pedido se creó con ese estado
+    estado_nuevo: EstadoPedido
+    usuario: str
+    accion: str  # crear, cambiar_estado, actualizar, planificar_ruta
+    fecha: datetime
