@@ -61,11 +61,12 @@ def main():
     print(f"Status: {response.status_code}")
     print(f"Response: {response.text}")
 
-    separador("PATCH /pedidos/1 (con token) - body: {'estado': 'confirmado'}")
+    # Historia #70: el estado ya no se cambia por PATCH (ver POST /pedidos/{id}/estado)
+    separador("PATCH /pedidos/1 (con token) - body: {'direccion_despacho': 'Calle Falsa 123'}")
     response = httpx.patch(
         f"{API_BASE_URL}/pedidos/1",
         headers=headers,
-        json={"estado": "confirmado"},
+        json={"direccion_despacho": "Calle Falsa 123"},
         timeout=30.0,
     )
     print(f"Status: {response.status_code}")

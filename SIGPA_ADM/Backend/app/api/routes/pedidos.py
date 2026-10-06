@@ -11,12 +11,15 @@ from app.models.comuna import Comuna
 from app.core.database import SessionLocal
 from app.core.security import get_current_user
 from app.models.cliente import Cliente
+from app.models.auditoria import Auditoria
 from app.models.detalle_pedido import DetallePedido
 from app.models.enums import DiaSemana, EstadoPedido
 from app.models.pedido import Pedido
 from app.models.producto import Producto
 from app.schemas.pedido import (
+    CambiarEstadoRequest,
     DetallePedidoLineaOut,
+    HistorialEstadoOut,
     PedidoCreate,
     PedidoDetalleOut,
     PedidoOut,
@@ -26,6 +29,11 @@ from app.schemas.pedido import (
 from app.services.auditoria_service import construir_snapshot, registrar_auditoria
 
 router = APIRouter(tags=["pedidos"], dependencies=[Depends(get_current_user)])
+
+TRANSICIONES_DESPACHO = {
+    EstadoPedido.CONFIRMADO: {EstadoPedido.EN_DESPACHO},
+    EstadoPedido.EN_DESPACHO: {EstadoPedido.CONFIRMADO},
+}
 
 def _nombre_completo_cliente(cliente: Cliente) -> str:
     apellidos = " ".join(
@@ -332,3 +340,94 @@ async def registrar_entrega(id: int, datos: RegistrarEntregaRequest):
         return _pedido_a_detalle_out(pedido_actualizado)
 
 
+@router.post("/{id}/estado", response_model=PedidoOut)
+async def cambiar_estado_pedido(
+    id: int, datos: CambiarEstadoRequest, current_user: dict = Depends(get_current_user)
+):
+    async with SessionLocal() as session:
+        # with_for_update bloquea la fila mientras se valida y cambia el estado,
+        # para que dos clics simultáneos no se pisen
+        result = await session.execute(
+            select(Pedido)
+            .where(Pedido.id == id)
+            .options(
+                selectinload(Pedido.cliente).selectinload(Cliente.sector).selectinload(Sector.comuna)
+            )
+            .with_for_update(of=Pedido)
+        )
+        pedido = result.scalar_one_or_none()
+
+        if pedido is None:
+            raise HTTPException(status_code=404, detail="Pedido no encontrado")
+
+        # Si el estado actual no está en la tabla (pendiente, entregado, cancelado)
+        # o el destino no está permitido, se rechaza con 409
+        permitidos = TRANSICIONES_DESPACHO.get(pedido.estado, set())
+        if datos.estado not in permitidos:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=(
+                    f"No se puede cambiar un pedido de '{pedido.estado.value}' "
+                    f"a '{datos.estado.value}' desde aquí"
+                ),
+            )
+
+        snapshot_antes = construir_snapshot(pedido)
+
+        pedido.estado = datos.estado
+        pedido.actualizado_en = datetime.utcnow()
+
+        await session.commit()
+
+        # accion="cambiar_estado" la distingue del PATCH ("actualizar") para armar el historial
+        await registrar_auditoria(
+            usuario=current_user.get("email"),
+            entidad="pedido",
+            entidad_id=pedido.id,
+            accion="cambiar_estado",
+            antes=snapshot_antes,
+            despues=construir_snapshot(pedido),
+        )
+
+        return _pedido_a_out(pedido)
+
+@router.get("/{id}/historial", response_model=list[HistorialEstadoOut])
+async def historial_estados_pedido(id: int):
+    """
+    Historia #70: historial de cambios de estado de un pedido, del más antiguo
+    al más reciente. Se arma desde la tabla auditoria comparando el estado de
+    la foto "antes" con la foto "despues" de cada registro.
+    """
+    async with SessionLocal() as session:
+        pedido = await session.get(Pedido, id)
+        if pedido is None:
+            raise HTTPException(status_code=404, detail="Pedido no encontrado")
+
+        result = await session.execute(
+            select(Auditoria)
+            .where(Auditoria.entidad == "pedido", Auditoria.entidad_id == id)
+            .order_by(Auditoria.creado_en, Auditoria.id)
+        )
+        registros = result.scalars().all()
+
+    historial = []
+    for registro in registros:
+        estado_anterior = (registro.antes or {}).get("estado")
+        estado_nuevo = (registro.despues or {}).get("estado")
+
+        # Se omiten los registros donde el estado no cambió
+        # (por ejemplo, un PATCH que solo modificó la dirección)
+        if estado_nuevo is None or estado_anterior == estado_nuevo:
+            continue
+
+        historial.append(
+            HistorialEstadoOut(
+                estado_anterior=estado_anterior,
+                estado_nuevo=estado_nuevo,
+                usuario=registro.usuario,
+                accion=registro.accion,
+                fecha=registro.creado_en,
+            )
+        )
+
+    return historial
