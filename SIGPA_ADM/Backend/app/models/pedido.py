@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import DateTime, ForeignKey, Integer, Numeric, String
+from sqlalchemy import DateTime, ForeignKey, Integer, Numeric, String, Text
 from sqlalchemy import Enum as SAEnum
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.sql import func
@@ -42,7 +42,7 @@ class Pedido(Base):
     # Posición en la ruta de reparto generada (1 = primera parada); NULL si no
     # está en una ruta o no se pudo ubicar (ver ruta_service).
     orden_entrega: Mapped[int | None] = mapped_column(Integer, nullable=True)
-
+    motivo_revision_direccion: Mapped[str | None] = mapped_column(Text, nullable=True)
     cliente: Mapped["Cliente"] = relationship("Cliente", back_populates="pedidos")
     detalles: Mapped[list["DetallePedido"]] = relationship(
         "DetallePedido", back_populates="pedido", cascade="all, delete-orphan"

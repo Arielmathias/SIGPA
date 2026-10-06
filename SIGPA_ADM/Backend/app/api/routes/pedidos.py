@@ -61,6 +61,7 @@ def _pedido_a_out(pedido: Pedido) -> PedidoOut:
         latitud=pedido.latitud,
         longitud=pedido.longitud,
         orden_entrega=pedido.orden_entrega,
+        motivo_revision_direccion=pedido.motivo_revision_direccion,
     )
 
 
@@ -133,6 +134,7 @@ async def listar_pedidos(
     estado: EstadoPedido | None = Query(None),
     fecha_desde: date | None = Query(None),
     fecha_hasta: date | None = Query(None),
+    revision_direccion: bool | None = Query(None),
 ):
     async with SessionLocal() as session:
         query = select(Pedido).options(
@@ -145,6 +147,12 @@ async def listar_pedidos(
             query = query.where(Pedido.creado_en >= datetime.combine(fecha_desde, time.min))
         if fecha_hasta is not None:
             query = query.where(Pedido.creado_en <= datetime.combine(fecha_hasta, time.max))
+        # Historia #107: true = solo pedidos con dirección por revisar,
+        # false = solo los que no tienen revisión pendiente
+        if revision_direccion is True:
+            query = query.where(Pedido.motivo_revision_direccion.is_not(None))
+        elif revision_direccion is False:
+            query = query.where(Pedido.motivo_revision_direccion.is_(None))
 
         result = await session.execute(query.order_by(Pedido.creado_en.desc()))
         pedidos = result.scalars().all()

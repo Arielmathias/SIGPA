@@ -298,6 +298,11 @@ async def _planificar(pedido_ids: list[int], usuario: str | None) -> dict:
                 pedido.estado = EstadoPedido.CONFIRMADO
                 parada = ruta_por_id.get(pid)
                 pedido.orden_entrega = parada["orden_entrega"] if parada else None
+
+                # Historia #107: si n8n no pudo ubicar la dirección, queda marcado
+                # con el motivo para revisión manual. Si entró a la ruta, se
+                # limpia una marca anterior.
+                pedido.motivo_revision_direccion = motivos.get(pid)
                 if parada and pedido.latitud is None and pedido.longitud is None:
                     # Solo se completan las coordenadas del pedido que llegó
                     # sin ellas; las del cliente nunca se tocan.
