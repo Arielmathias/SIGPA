@@ -7,21 +7,20 @@ React + Vite. Base preparada contra el backend de `fgaete94/SIGPA`, commit `0634
 1. Instalar Node.js 22.12 o superior compatible con Vite 7.
 2. Abrir esta carpeta (`SIGPA_ADM/Frontend`) en Visual Studio Code.
 3. Ejecutar `npm ci` en la terminal.
-4. Copiar `.env.example` a `.env.local` y completar:
+4. Copiar `.env.example` a `.env.local` e indicar la URL del backend FastAPI:
 
 ```dotenv
-VITE_SUPABASE_URL=https://TU-PROYECTO.supabase.co
-VITE_SUPABASE_PUBLISHABLE_KEY=TU_CLAVE_PUBLICA
-SIGPA_API_TARGET=https://TU-BACKEND.onrender.com
+SIGPA_API_TARGET=https://sigpa-34sy.onrender.com
 ```
 
-La clave debe ser publishable (o anon del proyecto). Nunca usar service_role, secret keys, contraseña de base de datos ni token de Meta en el frontend. El acceso se hace en la pantalla de inicio con una cuenta existente de Supabase; no se crean usuarios desde este panel.
+El frontend no usa Supabase ni necesita sus claves: la autenticación pasa por el backend (`/auth`), que actúa como proxy a Supabase Auth. El acceso se hace en la pantalla de inicio con una cuenta existente; no se crean usuarios desde este panel. Nunca poner claves, contraseñas de base de datos ni tokens de Meta en el frontend.
 
 5. Ejecutar `npm run dev` y abrir la dirección local indicada en la terminal. Reiniciar Vite al cambiar variables.
 
 ## Conexiones implementadas
 
-- Supabase Auth: inicio con correo/contraseña, sesión, renovación mediante SDK y cierre.
+- Autenticación vía backend: POST `/api/auth/login`, `/api/auth/refresh` y `/api/auth/logout`. El frontend ya no usa Supabase.
+- El refresh token se guarda en `sessionStorage` (sobrevive a recargar la página y se borra al cerrar la pestaña); el access token solo en memoria. El token se renueva antes de expirar y, si el backend responde 401, se renueva una vez y se reintenta; si la renovación es rechazada, se vuelve al login.
 - Todas las llamadas FastAPI llevan el JWT de la sesión.
 - GET `/pedidos`, GET `/pedidos/{id}`, GET `/clientes`.
 - GET `/rutas/pedidos-pendientes` y POST `/rutas/planificar` con `{pedido_ids:[...]}`.
@@ -37,12 +36,14 @@ Faltan: persistencia transaccional del orden manual, fecha de entrega e identida
 
 ## Despliegue
 
-`npm run build` genera `dist`. El proxy `/api` de Vite funciona SOLO con `npm run dev`. Para producción se necesita un proxy HTTPS del mismo origen que envíe `/api/*` a FastAPI quitando `/api`; no basta subir `dist` para conectar la API. Alternativamente, el equipo puede implementar URL directa y CORS explícito en el backend. `npm run preview` sirve únicamente para revisar la compilación, sin conexión API configurada.
+`npm run build` genera `dist`. El proxy `/api` de Vite funciona SOLO con `npm run dev`; no basta subir `dist` para conectar la API. En producción (Render, Static Site) se usa una regla **Rewrite** `/api/*` → `https://sigpa-34sy.onrender.com/*`, que envía las llamadas al backend quitando `/api` desde el mismo origen. El sitio no necesita variables `VITE_SUPABASE_*`.
+
+Esta regla todavía no se ha verificado en Render, en particular que reenvíe el header `Authorization` al backend. Si falla, el plan B es usar URL directa al backend y CORS explícito (solo el origen del sitio) en FastAPI.
+
+`npm run preview` sirve únicamente para revisar la compilación, sin conexión API configurada.
 
 No habilitar CORS universal ni exponer secretos para resolver esto. Las variables VITE son públicas y se incorporan al compilar.
 
 ## Verificación
 
-`npm run build` verifica la compilación. `npm test` comprueba que el reordenamiento conserve todos los pedidos y respete los extremos de la lista.
-
-Documentación de autenticación: https://supabase.com/docs/reference/javascript/auth-signinwithpassword y https://supabase.com/docs/reference/javascript/auth-onauthstatechange.
+`npm run build` verifica la compilación. `npm test` comprueba que el reordenamiento conserve todos los pedidos y respete los extremos de la lista, y prueba el módulo de sesión (decodificación del JWT, expiración con margen y un único refresh ante llamadas simultáneas).
