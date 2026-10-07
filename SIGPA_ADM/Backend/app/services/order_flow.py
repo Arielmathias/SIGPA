@@ -134,6 +134,14 @@ PREGUNTA_OPCIONES_PEDIDO = "¿Quieres cambiar algo, confirmar el pedido o cancel
 
 MENSAJE_CORRECCION_APLICADA = "Listo, hice el cambio."
 
+# Pedido explícito de cambio que no modificó nada del pedido (ver
+# _aplicar_resultado_llm): nunca se vuelve a mostrar el mismo resumen como si
+# el cambio se hubiera hecho.
+MENSAJE_CAMBIO_NO_APLICADO = (
+    "No pude aplicar el cambio. ¿Me dices qué producto y cuántas unidades quieres? "
+    "Tengo anotado: {pedido}."
+)
+
 MENSAJE_CORRECCION_RECHAZADA = (
     "Entendido, lo dejo como está. ¿Qué quieres cambiar, o prefieres confirmar o cancelar el pedido?"
 )
@@ -741,6 +749,48 @@ def _sumar_linea(productos: list[dict], nombre: str, cantidad: int) -> None:
             item["cantidad"] = _cantidad_valida(item.get("cantidad")) + cantidad
             return
     productos.append({"nombre_producto": nombre, "cantidad": cantidad})
+
+
+# En un pedido de cambio, palabras que indican quitar, sumar o reemplazar, no
+# fijar una cantidad: "quita un bidón", "mejor agrega 2 más", "cambia 2
+# bidones por un dispensador". Esos los sigue resolviendo el LLM.
+_PATRON_NO_FIJAR = re.compile(
+    r"\b(quit\w*|saca\w*|elimin\w*|borr\w*|sin|ya no|no quiero|menos|mas|agreg\w*|sum\w*"
+    r"|otr[oa]s?|por(?! favor)|reemplaz\w*|en vez|en lugar)\b"
+)
+
+
+def _cambio_cantidad_simple(productos: list[dict], texto_normalizado: str) -> tuple[int, int] | None:
+    """(índice de la línea, cantidad nueva) si el mensaje es un cambio de
+    cantidad simple que se puede resolver sin el LLM: "mejor que sean 2
+    bidones, no 3", "que sean dos bidones", "mejor 2 dispensadores" (bug del
+    2026-10-07: el LLM no devolvió el "fijar" y el cambio se perdió en
+    silencio). Debe traer un solo número (no cuentan los negados, "no 3", ni
+    una capacidad, "de 12"), mencionar un solo tipo de producto, y ese tipo
+    debe tener exactamente una línea en el pedido. Si algo es ambiguo (dos
+    líneas de bidones, un atributo distinto al de la línea, quitar o sumar),
+    devuelve None y no se adivina."""
+    if not _PATRON_MODIFICACION.search(texto_normalizado) or _PATRON_NO_FIJAR.search(texto_normalizado):
+        return None
+    tokens = texto_normalizado.split()
+    cantidades = [
+        int(t) if t.isdigit() else _NUMEROS_TEXTO[t]
+        for j, t in enumerate(tokens)
+        if (t.isdigit() or t in _NUMEROS_TEXTO)
+        and _capacidad_en(tokens, j) is None
+        and not (j > 0 and tokens[j - 1] in _NEGACIONES)
+    ]
+    tipos = [tipo for tipo in _PATRONES_TIPO_PRODUCTO if _menciona_tipo(tipo, texto_normalizado)]
+    if len(cantidades) != 1 or cantidades[0] < 1 or len(tipos) != 1:
+        return None
+    lineas = [i for i, p in enumerate(productos) if _tipo_producto(p.get("nombre_producto") or "") == tipos[0]]
+    if len(lineas) != 1:
+        return None
+    # "mejor 2 bidones de 20" con la línea de 12L cambia la capacidad, no
+    # solo la cantidad.
+    if not _atributos_mensaje(texto_normalizado) <= _atributos(productos[lineas[0]]["nombre_producto"]):
+        return None
+    return lineas[0], cantidades[0]
 
 
 def _fusionar_productos(
@@ -1651,14 +1701,29 @@ async def _aplicar_resultado_llm(
 
     # 2. Lo que extrajo el LLM: solo productos del catálogo y con atributos
     # que el cliente dijo (nunca una capacidad o un modelo supuesto).
+    # Un cambio de cantidad simple ("mejor que sean 2 bidones, no 3") se
+    # resuelve en código sin depender de que el LLM devuelva "fijar"; lo que
+    # el LLM extrajo de esa familia se ignora para no aplicarlo dos veces.
+    cambio_simple = _cambio_cantidad_simple(productos_previos, texto)
+    familia_cambio = _familia(productos_previos[cambio_simple[0]]["nombre_producto"]) if cambio_simple else None
+    if familia_cambio in familias_resueltas:
+        cambio_simple = familia_cambio = None
     aceptados, nombres_no_encontrados = _validar_extraidos(extraidos, mensaje, productos_previos, catalogo)
     no_encontrados += [
         {"texto": f"«{nombre}»", "opciones": _sugerencias(nombre, None, catalogo)}
         for nombre in nombres_no_encontrados
     ]
     productos, familias_modificadas = _fusionar_productos(
-        productos_previos, aceptados, mensaje, excluir_familias=frozenset(familias_resueltas)
+        productos_previos, aceptados, mensaje, excluir_familias=frozenset(familias_resueltas | {familia_cambio})
     )
+    if cambio_simple:
+        indice, cantidad = cambio_simple
+        nombre = productos_previos[indice]["nombre_producto"]
+        logger.info("[order_flow] Cambio de cantidad resuelto en código: %s -> %d", nombre, cantidad)
+        productos = [
+            {**p, "cantidad": cantidad} if p.get("nombre_producto") == nombre else p for p in productos
+        ]
+        familias_modificadas.add(familia_cambio)
 
     # 3. Lo que el cliente mencionó y el LLM no extrajo (bien) no se descarta
     # en silencio: se agrega si calza con un solo producto, queda pendiente
@@ -1713,11 +1778,32 @@ async def _aplicar_resultado_llm(
             "cantidad": max(1, _cantidad_valida(aclaracion_llm.get("cantidad"))),
         }
 
-    if familias_resueltas or lineas_codigo:
+    if familias_resueltas or lineas_codigo or cambio_simple:
         # El texto del LLM pudo preguntar algo que el código ya resolvió.
         respuesta_llm = None
     hay_pendientes = bool(aclaracion_pendiente or pendientes_modelo or no_encontrados)
     productos_cambiaron = productos != productos_previos
+
+    # Pedido explícito de cambio que no cambió nada (bug del 2026-10-07:
+    # "mejor que sean 2 bidones, no 3" con el LLM devolviendo "productos"
+    # vacío volvió a mostrar el mismo resumen, sin aviso). Se le dice que no
+    # se pudo aplicar en vez de fingir que sí. No cuentan los pasos de texto
+    # libre (una dirección "quiero cambiarla" no es un cambio del pedido), "no
+    # quiero nada más" en "¿algo más?", ni las consultas que responde el LLM.
+    cambio_no_aplicado = (
+        modificacion_explicita
+        and productos_previos
+        and not es_duda
+        and intencion not in ("consulta_precio", "consulta_pedidos")
+        and not (intencion == "fuera_de_alcance" and not _habla_del_pedido(texto))
+        and paso_previo not in _PASOS_TEXTO_LIBRE
+        and not (paso_previo == "algo_mas" and _no_quiere_nada_mas(mensaje))
+        and not productos_cambiaron
+        and not familias_modificadas
+        and not no_encontrados
+        and aclaracion_pendiente == aclaracion_previa
+        and pendientes_modelo == (draft_previo.get("pendientes_modelo") or [])
+    )
 
     # Datos ya capturados nunca se pierden ni se vuelven a pedir: un valor
     # nulo del LLM no borra lo que ya estaba en el draft.
@@ -1795,6 +1881,15 @@ async def _aplicar_resultado_llm(
         logger.error("[order_flow] Paso '%s' calculado sin productos para phone=%s", paso, phone)
         save_draft(phone, {**nuevo_draft, "paso": "producto", "estado": "armando"})
         paso, texto = "producto", PREGUNTA_PRODUCTO
+
+    if cambio_no_aplicado:
+        logger.info("[order_flow] Cambio pedido y no aplicado para phone=%s: %r", phone, mensaje)
+        if paso == "confirmacion":
+            # Un "sí" suelto después no debe confirmar el pedido que el
+            # cliente quería cambiar. En "¿algo más?" el estado no se toca:
+            # un "no" posterior es "no quiero nada más", no una cancelación.
+            save_draft(phone, {**(get_draft(phone) or nuevo_draft), "estado": ESTADO_ESPERANDO_MODIFICACION})
+        return MENSAJE_CAMBIO_NO_APLICADO.format(pedido=_resumen_productos_corto(productos))
 
     # Con el pedido listo para confirmar, una respuesta a otra cosa (duda,
     # tema fuera de alcance) no va pegada al resumen: va seguida de las
