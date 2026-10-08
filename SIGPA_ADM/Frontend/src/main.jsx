@@ -3,6 +3,7 @@ import { createRoot } from 'react-dom/client';
 import { login, logout, onSessionExpired, restoreSession } from './auth';
 import { api } from './api';
 import { moveStop } from './route';
+import Landing from './Landing';
 import './styles.css';
 
 const money = n => new Intl.NumberFormat('es-CL', { style: 'currency', currency: 'CLP' }).format(n);
@@ -20,7 +21,8 @@ function App() {
   }, []);
   if (loading) return <p className="loading">Cargando sesión…</p>;
   if (session) return <Dashboard key={session.user.id} session={session} onLogout={() => { setSession(null); setPage('inicio'); }}/>;
-  return <><header><Brand/><button onClick={() => setPage(page === 'inicio' ? 'login' : 'inicio')}>{page === 'inicio' ? 'Acceso administrativo' : 'Volver al inicio'}</button></header>{page === 'inicio' ? <main className="landing"><div className="eyebrow">GESTIÓN DE PEDIDOS Y REPARTOS</div><h1>Tu operación,<br/><em>en un solo lugar.</em></h1><p>Pedidos, clientes y rutas de Agua DM.<br/>Toda la información para organizar cada jornada.</p><button className="primary" onClick={() => setPage('login')}>Ingresar a SIGPA →</button><div className="features">{[['01','Pedidos','Revisa las solicitudes y su estado.'],['02','Clientes','Consulta los datos y días de reparto.'],['03','Rutas','Organiza las paradas antes de imprimir.']].map(([n,t,d]) => <article key={n}><small>{n}</small><h2>{t}</h2><p>{d}</p></article>)}</div></main> : <Login onLogin={user => setSession({ user })}/>}</>;
+  if (page === 'inicio') return <Landing onAdmin={() => { setPage('login'); window.scrollTo(0, 0); }}/>;
+  return <><header><Brand/><button onClick={() => setPage('inicio')}>Volver al inicio</button></header><Login onLogin={user => setSession({ user })}/></>;
 }
 function Login({ onLogin }) {
   const [error, setError] = useState('');
