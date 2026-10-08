@@ -43,11 +43,9 @@ html:has(.lp){background:#e9f0f7}
 .lp-hero h1{font-size:clamp(44px,5.8vw,84px);font-weight:800;text-transform:uppercase;color:var(--azul)}
 .lp-lead{font-size:clamp(18px,1.6vw,21px);color:var(--gris);margin:22px 0 30px;max-width:36ch;text-wrap:pretty}
 .lp-acciones{display:flex;flex-wrap:wrap;gap:12px}
-/* Los productos tienen fondo blanco: multiply lo funde con el pastel. El contenedor lleva
-   el mismo color del fondo para que la mezcla funcione aunque la animación lo aísle.
-   El padding deja espacio para que la imagen "flote" sin salirse de ese fondo. */
-.lp-hero-visual{position:relative;isolation:isolate;background:var(--fondo);padding:16px 0}
-.lp-hero-foto{width:100%;mix-blend-mode:multiply}
+/* Productos con fondo transparente; el padding deja espacio para que la imagen "flote". */
+.lp-hero-visual{position:relative;padding:16px 0}
+.lp-hero-foto{width:100%;height:auto}
 
 .lp-ola{display:block;width:100%;height:clamp(60px,9vw,140px);margin-bottom:-2px}
 .ola-verde{fill:var(--verde)}
@@ -82,12 +80,9 @@ html:has(.lp){background:#e9f0f7}
 .lp-card{background:var(--fondo-2);border-radius:22px;overflow:hidden;transition:transform .25s var(--ease-out),box-shadow .25s ease}
 .lp-card h4{font-size:30px;font-weight:700;color:var(--azul)}
 .lp-card p{color:var(--gris);margin:4px 0 12px}
-.lp-foto{position:relative;isolation:isolate;background:var(--superficie);overflow:hidden}
-.lp-foto img{position:absolute;inset:0;width:100%;height:100%;object-fit:contain;transition:transform .5s var(--ease-out)}
-/* Fotos con fondo propio: la imagen completa encima de su versión difuminada (sin franjas vacías) */
-.lp-foto:not(.recorte)::before{content:"";position:absolute;inset:-24px;z-index:-1;background:var(--img) center/cover;filter:blur(16px) saturate(1.1);opacity:.85}
-.lp-foto.recorte{background:var(--fondo)}
-.lp-foto.recorte img{object-fit:contain;mix-blend-mode:multiply;padding:12px}
+/* Fotos de producto con fondo transparente (y su sombra incluida) sobre el pastel */
+.lp-foto{position:relative;background:var(--fondo);overflow:hidden}
+.lp-foto img{position:absolute;inset:0;width:100%;height:100%;object-fit:contain;padding:12px;transition:transform .5s var(--ease-out)}
 .lp-card-foto{display:grid;grid-template-columns:38% 1fr;align-items:stretch}
 .lp-card-foto .lp-foto{min-height:240px;max-height:300px}
 .lp-card-foto>div{padding:22px 24px;align-self:center}

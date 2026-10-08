@@ -49,8 +49,8 @@ function Precio({ valor, children }) {
 }
 
 function Foto({ item, className }) {
-  // Fotos con fondo propio (cocina): se muestran completas, con la misma foto difuminada detrás.
-  return <div className={`lp-foto${item.fondoBlanco ? ' recorte' : ''}${className ? ` ${className}` : ''}`} style={item.fondoBlanco ? undefined : { '--img': `url(${item.imagen})` }}><img src={item.imagen} alt={item.nombre} loading="lazy"/></div>;
+  // Fotos de producto con fondo transparente: se ven completas sobre el pastel de la tarjeta.
+  return <div className={`lp-foto${className ? ` ${className}` : ''}`}><img src={item.imagen} alt={item.nombre} loading="lazy"/></div>;
 }
 
 export default function Landing({ onAdmin }) {
@@ -87,7 +87,7 @@ export default function Landing({ onAdmin }) {
           </div>
         </div>
         <div className="lp-hero-visual">
-          <img className="lp-hero-foto" src="/marca/productos.webp" alt="Dispensador USB, bidones de 12 y 20 litros y dispensador básico de Agua DM" width="1586" height="840" fetchPriority="high"/>
+          <img className="lp-hero-foto" src="/marca/productos.webp" alt="Dispensador USB, bidones de 12 y 20 litros y dispensador básico de Agua DM" width="1400" height="804" fetchPriority="high"/>
         </div>
       </section>
 

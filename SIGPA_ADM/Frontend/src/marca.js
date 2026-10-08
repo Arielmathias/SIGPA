@@ -17,22 +17,21 @@ export const REPARTO = [
 
 // producto: nombre exacto en la tabla producto; de ahí sale el precio. Si un producto deja de
 // existir en la base, su tarjeta (o línea de precio) desaparece de la landing.
-// fondoBlanco: foto recortada sobre blanco; la landing la funde con el fondo pastel.
 export const BIDONES = [
   { id: 'bidon-20', nombre: 'Bidón 20 L', imagen: '/marca/bidon-20.webp', precios: [['Bidón nuevo', 'Bidón 20L Nuevo'], ['Recarga', 'Bidón 20L Recarga']] },
   { id: 'bidon-12', nombre: 'Bidón 12 L', imagen: '/marca/bidon-12.webp', precios: [['Bidón nuevo', 'Bidón 12L Nuevo'], ['Recarga', 'Bidón 12L Recarga']] },
 ];
 
 export const DISPENSADORES = [
-  { id: 'dispensador-basico', nombre: 'Dispensador básico', producto: 'Dispensador Básico', detalle: 'De sobremesa, sin electricidad.', imagen: '/marca/dispensador-basico.webp', fondoBlanco: true },
-  { id: 'dispensador-usb', nombre: 'Dispensador USB', producto: 'Dispensador USB', detalle: 'Bomba recargable que va sobre el bidón.', imagen: '/marca/dispensador-usb.webp', fondoBlanco: true },
+  { id: 'dispensador-basico', nombre: 'Dispensador básico', producto: 'Dispensador Básico', detalle: 'De sobremesa, sin electricidad.', imagen: '/marca/dispensador-basico.webp' },
+  { id: 'dispensador-usb', nombre: 'Dispensador USB', producto: 'Dispensador USB', detalle: 'Bomba recargable que va sobre el bidón.', imagen: '/marca/dispensador-usb.webp' },
 ];
 
 export const PROMOS = [
-  { id: 'promo-basico-1', nombre: 'Dispensador básico + 1 bidón', producto: 'Promo Dispensador Básico + 1 Bidón', detalle: 'Un dispensador básico y un bidón.', imagen: '/marca/promo-basico-1.webp', fondoBlanco: true },
-  { id: 'promo-basico-2', nombre: 'Dispensador básico + 2 bidones', producto: 'Promo Dispensador Básico + 2 Bidones', detalle: 'Un dispensador básico y dos bidones.', imagen: '/marca/promo-basico-2.webp', fondoBlanco: true },
-  { id: 'promo-usb-1', nombre: 'Dispensador USB + 1 bidón', producto: 'Promo Dispensador USB + 1 Bidón', detalle: 'Un dispensador USB y un bidón.', imagen: '/marca/promo-usb-1.webp', fondoBlanco: true },
-  { id: 'promo-usb-2', nombre: 'Dispensador USB + 2 bidones', producto: 'Promo Dispensador USB + 2 Bidones', detalle: 'Un dispensador USB y dos bidones.', imagen: '/marca/promo-usb-2.webp', fondoBlanco: true },
+  { id: 'promo-basico-1', nombre: 'Dispensador básico + 1 bidón', producto: 'Promo Dispensador Básico + 1 Bidón', detalle: 'Un dispensador básico y un bidón.', imagen: '/marca/promo-basico-1.webp' },
+  { id: 'promo-basico-2', nombre: 'Dispensador básico + 2 bidones', producto: 'Promo Dispensador Básico + 2 Bidones', detalle: 'Un dispensador básico y dos bidones.', imagen: '/marca/promo-basico-2.webp' },
+  { id: 'promo-usb-1', nombre: 'Dispensador USB + 1 bidón', producto: 'Promo Dispensador USB + 1 Bidón', detalle: 'Un dispensador USB y un bidón.', imagen: '/marca/promo-usb-1.webp' },
+  { id: 'promo-usb-2', nombre: 'Dispensador USB + 2 bidones', producto: 'Promo Dispensador USB + 2 Bidones', detalle: 'Un dispensador USB y dos bidones.', imagen: '/marca/promo-usb-2.webp' },
 ];
 
 // Últimos precios conocidos de la tabla producto (2026-10-08). Solo se muestran mientras la API
