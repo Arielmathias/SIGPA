@@ -11,7 +11,7 @@ html:has(.lp){background:#e9f0f7}
 /* Neutraliza los estilos globales del panel (header, section, p, h1, h2, button) dentro de la landing */
 .lp :where(header,section,footer,figure){background:none;border:0;border-radius:0;padding:0;margin:0}
 .lp :where(p){color:inherit;line-height:inherit;margin:0}
-.lp :where(h1,h2,h3,h4){font-family:'Barlow Condensed',sans-serif;margin:0;letter-spacing:0;line-height:1.02;text-wrap:balance}
+.lp :where(h1,h2,h3,h4){font-family:'Barlow Condensed',sans-serif;color:inherit;margin:0;letter-spacing:0;line-height:1.02;text-wrap:balance}
 .lp :where(a){color:inherit}
 .lp :where(section){scroll-margin-top:84px}
 .lp :where(img){display:block;max-width:100%;height:auto}
