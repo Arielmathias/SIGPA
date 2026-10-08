@@ -119,9 +119,22 @@ async def actualizar_cliente(
         if cliente is None:
             raise HTTPException(status_code=404, detail="Cliente no encontrado")
 
+        cambios = datos.model_dump(exclude_unset=True)
+
+        # El bot identifica al cliente por su teléfono: no puede quedar repetido
+        if cambios.get("telefono") and cambios["telefono"] != cliente.telefono:
+            result = await session.execute(
+                select(Cliente).where(Cliente.telefono == cambios["telefono"], Cliente.id != id)
+            )
+            if result.scalars().first() is not None:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail="Ya existe un cliente con ese teléfono",
+                )
+
         snapshot_antes = construir_snapshot(cliente)
 
-        for campo, valor in datos.model_dump(exclude_unset=True).items():
+        for campo, valor in cambios.items():
             setattr(cliente, campo, valor)
 
         await session.commit()
