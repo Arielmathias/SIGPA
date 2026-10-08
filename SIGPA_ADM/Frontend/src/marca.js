@@ -1,5 +1,6 @@
 // Información pública de Agua DM para la landing.
-// Tomada de las publicaciones de Facebook del negocio: confirmar precios y días con ADM antes de publicar.
+// Los precios vienen de la tabla producto vía GET /productos (ver catalogo.js); aquí solo van
+// fotos y textos. Días y contacto se tomaron de Facebook: confirmar con ADM.
 export const WHATSAPP = '56990667641';
 export const WHATSAPP_VISIBLE = '+56 9 9066 7641';
 export const SITIO = 'aguadm.cl';
@@ -14,22 +15,34 @@ export const REPARTO = [
   { dia: 4, nombre: 'Jueves', zona: 'Concón' },
 ];
 
+// producto: nombre exacto en la tabla producto; de ahí sale el precio. Si un producto deja de
+// existir en la base, su tarjeta (o línea de precio) desaparece de la landing.
 // fondoBlanco: foto recortada sobre blanco; la landing la funde con el fondo pastel.
 export const BIDONES = [
-  { id: 'bidon-20', nombre: 'Bidón 20 L', imagen: '/marca/bidon-20.webp', precios: [['Bidón nuevo', 6000], ['Recarga', 2500]] },
-  { id: 'bidon-12', nombre: 'Bidón 12 L', imagen: '/marca/bidon-12.webp', precios: [['Bidón nuevo', 6000], ['Recarga', 2000]] },
+  { id: 'bidon-20', nombre: 'Bidón 20 L', imagen: '/marca/bidon-20.webp', precios: [['Bidón nuevo', 'Bidón 20L Nuevo'], ['Recarga', 'Bidón 20L Recarga']] },
+  { id: 'bidon-12', nombre: 'Bidón 12 L', imagen: '/marca/bidon-12.webp', precios: [['Bidón nuevo', 'Bidón 12L Nuevo'], ['Recarga', 'Bidón 12L Recarga']] },
 ];
 
 export const DISPENSADORES = [
-  { id: 'dispensador-basico', nombre: 'Dispensador básico', detalle: 'De sobremesa, sin electricidad.', imagen: '/marca/dispensador-basico.webp', fondoBlanco: true, precio: 7000 },
-  { id: 'dispensador-usb', nombre: 'Dispensador USB', detalle: 'Bomba recargable que va sobre el bidón.', imagen: '/marca/dispensador-usb.webp', fondoBlanco: true, precio: 7000 },
+  { id: 'dispensador-basico', nombre: 'Dispensador básico', producto: 'Dispensador Básico', detalle: 'De sobremesa, sin electricidad.', imagen: '/marca/dispensador-basico.webp', fondoBlanco: true },
+  { id: 'dispensador-usb', nombre: 'Dispensador USB', producto: 'Dispensador USB', detalle: 'Bomba recargable que va sobre el bidón.', imagen: '/marca/dispensador-usb.webp', fondoBlanco: true },
 ];
 
-export const PACKS = [
-  { id: 'pack-20-basico', nombre: 'Pack 20 L + dispensador básico', detalle: '2 bidones de 20 L y un dispensador básico.', imagen: '/marca/pack-20.webp', fondoBlanco: true, precio: 17000 },
-  { id: 'pack-20-usb', nombre: 'Pack 20 L + dispensador USB', detalle: '2 bidones de 20 L y un dispensador USB.', imagen: '/marca/pack-20.webp', fondoBlanco: true, precio: 17000 },
-  { id: 'pack-12-basico', nombre: 'Pack 12 L + dispensador básico', detalle: '2 bidones de 12 L y un dispensador básico.', imagen: '/marca/bidon-12.webp', precio: 17000 },
+export const PROMOS = [
+  { id: 'promo-basico-1', nombre: 'Dispensador básico + 1 bidón', producto: 'Promo Dispensador Básico + 1 Bidón', detalle: 'Un dispensador básico y un bidón.', imagen: '/marca/promo-basico-1.webp', fondoBlanco: true },
+  { id: 'promo-basico-2', nombre: 'Dispensador básico + 2 bidones', producto: 'Promo Dispensador Básico + 2 Bidones', detalle: 'Un dispensador básico y dos bidones.', imagen: '/marca/promo-basico-2.webp', fondoBlanco: true },
+  { id: 'promo-usb-1', nombre: 'Dispensador USB + 1 bidón', producto: 'Promo Dispensador USB + 1 Bidón', detalle: 'Un dispensador USB y un bidón.', imagen: '/marca/promo-usb-1.webp', fondoBlanco: true },
+  { id: 'promo-usb-2', nombre: 'Dispensador USB + 2 bidones', producto: 'Promo Dispensador USB + 2 Bidones', detalle: 'Un dispensador USB y dos bidones.', imagen: '/marca/promo-usb-2.webp', fondoBlanco: true },
 ];
+
+// Últimos precios conocidos de la tabla producto (2026-10-08). Solo se muestran mientras la API
+// responde (Render tarda en despertar) o si falla; nunca reemplazan a los de la base.
+export const PRECIOS_RESPALDO = {
+  'Bidón 12L Nuevo': 6000, 'Bidón 12L Recarga': 2000, 'Bidón 20L Nuevo': 6000, 'Bidón 20L Recarga': 2500,
+  'Dispensador Básico': 7000, 'Dispensador USB': 7000,
+  'Promo Dispensador Básico + 1 Bidón': 11000, 'Promo Dispensador Básico + 2 Bidones': 17000,
+  'Promo Dispensador USB + 1 Bidón': 11000, 'Promo Dispensador USB + 2 Bidones': 17000,
+};
 
 export const pesos = n => new Intl.NumberFormat('es-CL', { style: 'currency', currency: 'CLP', maximumFractionDigits: 0 }).format(n);
 

@@ -153,7 +153,7 @@ html:has(.lp){background:#e9f0f7}
   .lp-semana li.hoy{animation:lp-hoy 2.8s ease-in-out infinite}
   /* Aparición al hacer scroll (la clase lp-js la pone el componente) */
   /* fill-mode backwards: al terminar no deja transform fijo, así el :hover de las tarjetas sigue funcionando */
-  .lp-js [data-revelar]:not(.visible){opacity:0}
+  .lp-js .por-revelar:not(.visible){opacity:0}
   .lp-js [data-revelar].visible{animation:lp-entra .7s var(--ease-entrada) backwards;animation-delay:calc(var(--i,0) * 70ms)}
 }
 @media (prefers-reduced-motion:reduce){.lp *{transition-duration:.01ms!important}.lp-velo,.lp-ventana{animation:none}}

@@ -1,5 +1,6 @@
-import React, { useCallback, useLayoutEffect, useRef, useState } from 'react';
-import { BIDONES, COMUNAS, DISPENSADORES, PACKS, REPARTO, SITIO, WHATSAPP_VISIBLE, enlaceWhatsApp, pesos } from './marca';
+import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { BIDONES, COMUNAS, DISPENSADORES, PRECIOS_RESPALDO, PROMOS, REPARTO, SITIO, WHATSAPP_VISIBLE, enlaceWhatsApp, pesos } from './marca';
+import { cargarPrecios, preciosGuardados } from './catalogo';
 import { Qr, VentanaQr } from './QrWhatsApp';
 import './landing.css';
 
@@ -19,7 +20,8 @@ function useRevelar(raiz) {
     const observador = new IntersectionObserver(entradas => entradas.forEach(e => {
       if (e.isIntersecting) { e.target.classList.add('visible'); observador.unobserve(e.target); }
     }), { rootMargin: '0px 0px -8% 0px', threshold: 0.12 });
-    nodo.querySelectorAll('[data-revelar]').forEach(el => observador.observe(el));
+    // Solo se ocultan los que se observan: lo que aparezca después (p. ej. al llegar los precios) se ve de inmediato.
+    nodo.querySelectorAll('[data-revelar]').forEach(el => { el.classList.add('por-revelar'); observador.observe(el); });
     return () => observador.disconnect();
   }, [raiz]);
 }
@@ -54,6 +56,14 @@ function Foto({ item, className }) {
 export default function Landing({ onAdmin }) {
   const hoy = new Date().getDay();
   const [qr, setQr] = useState(null);
+  // Se muestra algo al tiro (lo guardado o el respaldo) y se reemplaza por lo de la base apenas responde.
+  const [precios, setPrecios] = useState(() => preciosGuardados() || PRECIOS_RESPALDO);
+  useEffect(() => {
+    const controlador = new AbortController();
+    cargarPrecios(controlador.signal).then(setPrecios).catch(() => { /* se mantienen los precios mostrados */ });
+    return () => controlador.abort();
+  }, []);
+  const hay = producto => producto in precios;
   const cerrarQr = useCallback(() => setQr(null), []);
   const raiz = useRef(null);
   useRevelar(raiz);
@@ -107,27 +117,27 @@ export default function Landing({ onAdmin }) {
 
         <h3 data-revelar>Bidones</h3>
         <div className="lp-grid lp-grid-2">
-          {BIDONES.map((b, i) => <article key={b.id} className="lp-card lp-card-foto" data-revelar style={{ '--i': i }}>
+          {BIDONES.filter(b => b.precios.some(([, p]) => hay(p))).map((b, i) => <article key={b.id} className="lp-card lp-card-foto" data-revelar style={{ '--i': i }}>
             <Foto item={b}/>
-            <div><h4>{b.nombre}</h4>{b.precios.map(([t, v]) => <Precio key={t} valor={v}>{t}</Precio>)}
+            <div><h4>{b.nombre}</h4>{b.precios.filter(([, p]) => hay(p)).map(([t, p]) => <Precio key={t} valor={precios[p]}>{t}</Precio>)}
               <Pedir producto={b.nombre} onQr={setQr}>Pedir {b.nombre} →</Pedir></div>
           </article>)}
         </div>
 
-        <h3 data-revelar>Packs <span>incluyen despacho</span></h3>
-        <div className="lp-grid lp-grid-3">
-          {PACKS.map((p, i) => <article key={p.id} className="lp-card lp-card-pack" data-revelar style={{ '--i': i }}>
+        <h3 data-revelar>Promociones <span>incluyen despacho</span></h3>
+        <div className="lp-grid lp-grid-2">
+          {PROMOS.filter(p => hay(p.producto)).map((p, i) => <article key={p.id} className="lp-card lp-card-pack" data-revelar style={{ '--i': i }}>
             <Foto item={p}/>
-            <h4>{p.nombre}</h4><p>{p.detalle}</p><Precio valor={p.precio}/>
-            <Pedir producto={p.nombre} onQr={setQr}>Pedir este pack →</Pedir>
+            <h4>{p.nombre}</h4><p>{p.detalle}</p><Precio valor={precios[p.producto]}/>
+            <Pedir producto={p.nombre} onQr={setQr}>Pedir esta promoción →</Pedir>
           </article>)}
         </div>
 
         <h3 data-revelar>Dispensadores</h3>
         <div className="lp-grid lp-grid-2">
-          {DISPENSADORES.map((d, i) => <article key={d.id} className="lp-card lp-card-foto" data-revelar style={{ '--i': i }}>
+          {DISPENSADORES.filter(d => hay(d.producto)).map((d, i) => <article key={d.id} className="lp-card lp-card-foto" data-revelar style={{ '--i': i }}>
             <Foto item={d}/>
-            <div><h4>{d.nombre}</h4><p>{d.detalle}</p><Precio valor={d.precio}/>
+            <div><h4>{d.nombre}</h4><p>{d.detalle}</p><Precio valor={precios[d.producto]}/>
               <Pedir producto={d.nombre} onQr={setQr}>Pedir {d.nombre} →</Pedir></div>
           </article>)}
         </div>
