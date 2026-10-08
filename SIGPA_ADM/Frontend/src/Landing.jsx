@@ -1,4 +1,4 @@
-import React, { useCallback, useState } from 'react';
+import React, { useCallback, useLayoutEffect, useRef, useState } from 'react';
 import { BIDONES, COMUNAS, DISPENSADORES, PACKS, REPARTO, SITIO, WHATSAPP_VISIBLE, enlaceWhatsApp, pesos } from './marca';
 import { Qr, VentanaQr } from './QrWhatsApp';
 import './landing.css';
@@ -6,6 +6,23 @@ import './landing.css';
 const mensajePedido = producto => `Hola, quiero pedir: ${producto}`;
 // En computador no hay WhatsApp a mano: se muestra un QR para escanear con el celular.
 const esEscritorio = () => window.matchMedia?.('(hover: hover) and (pointer: fine)').matches;
+
+// Burbujas decorativas de la sección de reparto: posición, tamaño, duración y desfase.
+const BURBUJAS = [[6, 14, 13, 0], [18, 8, 10, 3], [31, 22, 16, 6], [47, 10, 12, 1], [62, 16, 15, 8], [74, 9, 11, 4], [86, 20, 17, 2], [94, 12, 13, 7]];
+
+// Muestra con una transición los elementos [data-revelar] cuando entran en pantalla.
+function useRevelar(raiz) {
+  useLayoutEffect(() => {
+    const nodo = raiz.current;
+    if (!nodo || !('IntersectionObserver' in window)) return;
+    nodo.classList.add('lp-js'); // sin JS todo queda visible
+    const observador = new IntersectionObserver(entradas => entradas.forEach(e => {
+      if (e.isIntersecting) { e.target.classList.add('visible'); observador.unobserve(e.target); }
+    }), { rootMargin: '0px 0px -8% 0px', threshold: 0.12 });
+    nodo.querySelectorAll('[data-revelar]').forEach(el => observador.observe(el));
+    return () => observador.disconnect();
+  }, [raiz]);
+}
 
 function Pedir({ producto, onQr, children }) {
   return <a className="lp-pedir" href={enlaceWhatsApp(mensajePedido(producto))} target="_blank" rel="noopener noreferrer"
@@ -17,21 +34,31 @@ function WhatsAppIcon() {
 }
 
 function Ola({ className }) {
-  // La ola verde sobre azul de las piezas gráficas de Agua DM
-  return <svg className={className} aria-hidden="true" viewBox="0 0 1440 140" preserveAspectRatio="none"><path className="ola-verde" d="M0 70C240 10 420 10 640 52s420 70 800-30v118H0Z"/><path className="ola-azul" d="M0 98C260 40 440 44 660 78s420 50 780-38v100H0Z"/></svg>;
+  // La ola verde sobre azul de las piezas gráficas de Agua DM. Los trazos son más anchos
+  // que el lienzo para poder mecerse de lado a lado sin dejar bordes vacíos.
+  return <svg className={className} aria-hidden="true" viewBox="0 0 1440 140" preserveAspectRatio="none">
+    <path className="ola-verde" d="M-160 72C80 12 300 8 560 50s480 70 1040-20v138H-160Z"/>
+    <path className="ola-azul" d="M-160 100C100 44 320 42 600 78s460 50 1000-24v86H-160Z"/>
+  </svg>;
 }
 
 function Precio({ valor, children }) {
   return <span className="lp-precio"><small>{children}</small>{pesos(valor)}</span>;
 }
 
+function Foto({ item, className }) {
+  return <div className={`lp-foto${item.fondoBlanco ? ' recorte' : ''}${className ? ` ${className}` : ''}`}><img src={item.imagen} alt={item.nombre} loading="lazy"/></div>;
+}
+
 export default function Landing({ onAdmin }) {
   const hoy = new Date().getDay();
   const [qr, setQr] = useState(null);
   const cerrarQr = useCallback(() => setQr(null), []);
-  return <div className="lp">
+  const raiz = useRef(null);
+  useRevelar(raiz);
+  return <div className="lp" ref={raiz}>
     <header className="lp-top">
-      <a className="lp-logo" href="#inicio" aria-label="Agua DM, inicio"><img src="/marca/logo.jpg" alt="DM Agua Purificada" width="400" height="393"/></a>
+      <a className="lp-logo" href="#inicio" aria-label="Agua DM, inicio"><img src="/marca/logo.svg" alt="DM Agua Purificada" width="2320" height="2280"/></a>
       <nav aria-label="Secciones"><a href="#precios">Precios</a><a href="#reparto">Días de reparto</a><a href="#contacto">Contacto</a></nav>
       <a className="lp-btn lp-btn-wsp lp-top-cta" href={enlaceWhatsApp()} target="_blank" rel="noopener noreferrer"><WhatsAppIcon/>Pedir</a>
       <button type="button" className="lp-admin" onClick={onAdmin}>Admin</button>
@@ -40,62 +67,66 @@ export default function Landing({ onAdmin }) {
     <main>
       <section className="lp-hero" id="inicio">
         <div className="lp-hero-texto">
-          <p className="lp-kicker">Agua purificada · Despacho gratuito</p>
-          <h1>Tu agua, en la puerta de tu casa.</h1>
-          <p className="lp-lead">Llevamos bidones de 12 y 20 litros de lunes a viernes a {COMUNAS.slice(0, -1).join(', ')} y {COMUNAS.at(-1)}.</p>
-          <div className="lp-acciones">
+          <p className="lp-kicker" style={{ '--d': 0 }}>Agua purificada · Despacho gratuito</p>
+          <h1 style={{ '--d': 1 }}>Tu agua, en la puerta de tu casa.</h1>
+          <p className="lp-lead" style={{ '--d': 2 }}>Llevamos bidones de 12 y 20 litros de lunes a viernes a {COMUNAS.slice(0, -1).join(', ')} y {COMUNAS.at(-1)}.</p>
+          <div className="lp-acciones" style={{ '--d': 3 }}>
             <a className="lp-btn lp-btn-wsp" href={enlaceWhatsApp('Hola, quiero hacer un pedido de agua')} target="_blank" rel="noopener noreferrer"><WhatsAppIcon/>Pedir por WhatsApp</a>
             <a className="lp-btn lp-btn-linea" href="#precios">Ver precios</a>
           </div>
         </div>
-        <img className="lp-hero-foto" src="/marca/productos.jpg" alt="Bidones de 20 y 12 litros, botella de 6 litros, dispensador USB y dispensador básico de Agua DM" width="845" height="420"/>
+        <div className="lp-hero-visual">
+          <img className="lp-agua" src="/marca/agua.webp" alt="" width="1300" height="1190"/>
+          <img className="lp-hero-foto" src="/marca/productos.webp" alt="Bidones de 20 y 12 litros, botella de 6 litros, dispensador USB y dispensador básico de Agua DM" width="1690" height="840" fetchPriority="high"/>
+        </div>
       </section>
 
       <Ola className="lp-ola"/>
 
       <section className="lp-reparto" id="reparto" aria-labelledby="reparto-titulo">
+        <div className="lp-burbujas" aria-hidden="true">{BURBUJAS.map(([x, s, t, d]) => <span key={x} style={{ '--x': `${x}%`, '--s': `${s}px`, '--t': `${t}s`, '--d': `-${d}s` }}/>)}</div>
         <div className="lp-reparto-texto">
-          <h2 id="reparto-titulo">¿Qué día pasamos por tu sector?</h2>
+          <h2 id="reparto-titulo" data-revelar>¿Qué día pasamos por tu sector?</h2>
           <ol className="lp-semana">
-            {REPARTO.map(r => <li key={r.dia} className={r.dia === hoy ? 'hoy' : ''}>
+            {REPARTO.map((r, i) => <li key={r.dia} className={r.dia === hoy ? 'hoy' : ''} data-revelar style={{ '--i': i }}>
               <span className="lp-dia">{r.nombre}{r.dia === hoy && <em>Hoy</em>}</span>
               <span className="lp-zona">{r.zona}</span>
             </li>)}
           </ol>
-          <p className="lp-nota">¿Estás en Reñaca o en otro sector? <a href={enlaceWhatsApp('Hola, ¿qué día reparten en mi sector?')} target="_blank" rel="noopener noreferrer">Escríbenos</a> y te confirmamos el día.</p>
+          <p className="lp-nota" data-revelar style={{ '--i': REPARTO.length }}>¿Estás en Reñaca o en otro sector? <a href={enlaceWhatsApp('Hola, ¿qué día reparten en mi sector?')} target="_blank" rel="noopener noreferrer">Escríbenos</a> y te confirmamos el día.</p>
         </div>
-        <figure className="lp-repartidor">
-          <img src="/marca/repartidor.jpg" alt="Repartidor de Agua DM con un bidón de 20 litros al hombro" width="440" height="640" loading="lazy"/>
+        <figure className="lp-repartidor" data-revelar style={{ '--i': 2 }}>
+          <img src="/marca/repartidor.webp" alt="Repartidor de Agua DM con un bidón de 20 litros al hombro" width="880" height="1280" loading="lazy"/>
           <figcaption>El despacho a domicilio no tiene costo.</figcaption>
         </figure>
       </section>
 
       <section className="lp-precios" id="precios" aria-labelledby="precios-titulo">
-        <h2 id="precios-titulo">Precios</h2>
-        <p className="lp-sub">Valores referenciales: te los confirmamos al tomar tu pedido.</p>
+        <h2 id="precios-titulo" data-revelar>Precios</h2>
+        <p className="lp-sub" data-revelar style={{ '--i': 1 }}>Valores referenciales: te los confirmamos al tomar tu pedido.</p>
 
-        <h3>Bidones</h3>
+        <h3 data-revelar>Bidones</h3>
         <div className="lp-grid lp-grid-2">
-          {BIDONES.map(b => <article key={b.id} className="lp-card lp-card-foto">
-            <img src={b.imagen} alt={b.nombre} loading="lazy"/>
+          {BIDONES.map((b, i) => <article key={b.id} className="lp-card lp-card-foto" data-revelar style={{ '--i': i }}>
+            <Foto item={b}/>
             <div><h4>{b.nombre}</h4>{b.precios.map(([t, v]) => <Precio key={t} valor={v}>{t}</Precio>)}
               <Pedir producto={b.nombre} onQr={setQr}>Pedir {b.nombre} →</Pedir></div>
           </article>)}
         </div>
 
-        <h3>Packs <span>incluyen despacho</span></h3>
+        <h3 data-revelar>Packs <span>incluyen despacho</span></h3>
         <div className="lp-grid lp-grid-3">
-          {PACKS.map(p => <article key={p.id} className="lp-card lp-card-pack">
-            <img src={p.imagen} alt="" loading="lazy"/>
+          {PACKS.map((p, i) => <article key={p.id} className="lp-card lp-card-pack" data-revelar style={{ '--i': i }}>
+            <Foto item={p}/>
             <h4>{p.nombre}</h4><p>{p.detalle}</p><Precio valor={p.precio}/>
             <Pedir producto={p.nombre} onQr={setQr}>Pedir este pack →</Pedir>
           </article>)}
         </div>
 
-        <h3>Dispensadores</h3>
+        <h3 data-revelar>Dispensadores</h3>
         <div className="lp-grid lp-grid-2">
-          {DISPENSADORES.map(d => <article key={d.id} className="lp-card lp-card-foto">
-            <img src={d.imagen} alt={d.nombre} loading="lazy"/>
+          {DISPENSADORES.map((d, i) => <article key={d.id} className="lp-card lp-card-foto" data-revelar style={{ '--i': i }}>
+            <Foto item={d}/>
             <div><h4>{d.nombre}</h4><p>{d.detalle}</p><Precio valor={d.precio}/>
               <Pedir producto={d.nombre} onQr={setQr}>Pedir {d.nombre} →</Pedir></div>
           </article>)}
@@ -103,14 +134,14 @@ export default function Landing({ onAdmin }) {
       </section>
 
       <section className="lp-contacto" id="contacto" aria-labelledby="contacto-titulo">
-        <h2 id="contacto-titulo">Pide por WhatsApp</h2>
-        <p>Cuéntanos qué necesitas y tu dirección. Te confirmamos el día de reparto de tu sector.</p>
-        <div className="lp-contacto-cta"><a className="lp-numero" href={enlaceWhatsApp()} target="_blank" rel="noopener noreferrer"><WhatsAppIcon/>{WHATSAPP_VISIBLE}</a><figure className="lp-qr-contacto"><Qr texto={enlaceWhatsApp('Hola, quiero hacer un pedido de agua')} titulo="Código QR para escribirnos por WhatsApp"/><figcaption>Escanéalo con tu celular</figcaption></figure></div>
+        <h2 id="contacto-titulo" data-revelar>Pide por WhatsApp</h2>
+        <p data-revelar style={{ '--i': 1 }}>Cuéntanos qué necesitas y tu dirección. Te confirmamos el día de reparto de tu sector.</p>
+        <div className="lp-contacto-cta" data-revelar style={{ '--i': 2 }}><a className="lp-numero" href={enlaceWhatsApp()} target="_blank" rel="noopener noreferrer"><WhatsAppIcon/>{WHATSAPP_VISIBLE}</a><figure className="lp-qr-contacto"><Qr texto={enlaceWhatsApp('Hola, quiero hacer un pedido de agua')} titulo="Código QR para escribirnos por WhatsApp"/><figcaption>Escanéalo con tu celular</figcaption></figure></div>
       </section>
     </main>
 
     <footer className="lp-pie">
-      <img src="/marca/logo.jpg" alt="DM Agua Purificada" width="400" height="393" loading="lazy"/>
+      <img src="/marca/logo-blanco.svg" alt="DM Agua Purificada" width="2320" height="2280" loading="lazy"/>
       <div><strong>Zonas de reparto</strong><p>{COMUNAS.join(' · ')}</p></div>
       <div><strong>Contacto</strong><p><a href={enlaceWhatsApp()} target="_blank" rel="noopener noreferrer">{WHATSAPP_VISIBLE}</a><br/><a href={`https://${SITIO}`} target="_blank" rel="noopener noreferrer">{SITIO}</a></p></div>
       <button type="button" className="lp-admin" onClick={onAdmin}>Acceso administrativo</button>

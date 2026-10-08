@@ -14,20 +14,21 @@ export const REPARTO = [
   { dia: 4, nombre: 'Jueves', zona: 'Concón' },
 ];
 
+// fondoBlanco: foto recortada sobre blanco; la landing la funde con el fondo pastel.
 export const BIDONES = [
-  { id: 'bidon-20', nombre: 'Bidón 20 L', imagen: '/marca/bidon-20.jpg', precios: [['Bidón nuevo', 6000], ['Recarga', 2500]] },
-  { id: 'bidon-12', nombre: 'Bidón 12 L', imagen: '/marca/bidon-12.jpg', precios: [['Bidón nuevo', 6000], ['Recarga', 2000]] },
+  { id: 'bidon-20', nombre: 'Bidón 20 L', imagen: '/marca/bidon-20.webp', precios: [['Bidón nuevo', 6000], ['Recarga', 2500]] },
+  { id: 'bidon-12', nombre: 'Bidón 12 L', imagen: '/marca/bidon-12.webp', precios: [['Bidón nuevo', 6000], ['Recarga', 2000]] },
 ];
 
 export const DISPENSADORES = [
-  { id: 'dispensador-basico', nombre: 'Dispensador básico', detalle: 'De sobremesa, sin electricidad.', imagen: '/marca/dispensador-basico.jpg', precio: 7000 },
-  { id: 'dispensador-usb', nombre: 'Dispensador USB', detalle: 'Bomba recargable que va sobre el bidón.', imagen: '/marca/dispensador-usb.jpg', precio: 7000 },
+  { id: 'dispensador-basico', nombre: 'Dispensador básico', detalle: 'De sobremesa, sin electricidad.', imagen: '/marca/dispensador-basico.webp', fondoBlanco: true, precio: 7000 },
+  { id: 'dispensador-usb', nombre: 'Dispensador USB', detalle: 'Bomba recargable que va sobre el bidón.', imagen: '/marca/dispensador-usb.webp', fondoBlanco: true, precio: 7000 },
 ];
 
 export const PACKS = [
-  { id: 'pack-20-basico', nombre: 'Pack 20 L + dispensador básico', detalle: '2 bidones de 20 L y un dispensador básico.', imagen: '/marca/pack-20.jpg', precio: 17000 },
-  { id: 'pack-20-usb', nombre: 'Pack 20 L + dispensador USB', detalle: '2 bidones de 20 L y un dispensador USB.', imagen: '/marca/pack-20.jpg', precio: 17000 },
-  { id: 'pack-12-basico', nombre: 'Pack 12 L + dispensador básico', detalle: '2 bidones de 12 L y un dispensador básico.', imagen: '/marca/bidon-12.jpg', precio: 17000 },
+  { id: 'pack-20-basico', nombre: 'Pack 20 L + dispensador básico', detalle: '2 bidones de 20 L y un dispensador básico.', imagen: '/marca/pack-20.webp', fondoBlanco: true, precio: 17000 },
+  { id: 'pack-20-usb', nombre: 'Pack 20 L + dispensador USB', detalle: '2 bidones de 20 L y un dispensador USB.', imagen: '/marca/pack-20.webp', fondoBlanco: true, precio: 17000 },
+  { id: 'pack-12-basico', nombre: 'Pack 12 L + dispensador básico', detalle: '2 bidones de 12 L y un dispensador básico.', imagen: '/marca/bidon-12.webp', precio: 17000 },
 ];
 
 export const pesos = n => new Intl.NumberFormat('es-CL', { style: 'currency', currency: 'CLP', maximumFractionDigits: 0 }).format(n);
