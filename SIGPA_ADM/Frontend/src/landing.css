@@ -43,11 +43,10 @@ html:has(.lp){background:#e9f0f7}
 .lp-hero h1{font-size:clamp(44px,5.8vw,84px);font-weight:800;text-transform:uppercase;color:var(--azul)}
 .lp-lead{font-size:clamp(18px,1.6vw,21px);color:var(--gris);margin:22px 0 30px;max-width:36ch;text-wrap:pretty}
 .lp-acciones{display:flex;flex-wrap:wrap;gap:12px}
-/* El chorro de agua y los productos tienen fondo blanco: multiply lo funde con el pastel.
-   El contenedor lleva el mismo color del fondo para que la mezcla tenga contra qué operar
-   aunque la animación de entrada lo aísle en su propio grupo. */
-.lp-hero-visual{position:relative;isolation:isolate;background:var(--fondo)}
-.lp-agua{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;z-index:-1;mix-blend-mode:multiply;opacity:.6;-webkit-mask-image:radial-gradient(closest-side,#000 60%,transparent);mask-image:radial-gradient(closest-side,#000 60%,transparent)}
+/* Los productos tienen fondo blanco: multiply lo funde con el pastel. El contenedor lleva
+   el mismo color del fondo para que la mezcla funcione aunque la animación lo aísle.
+   El padding deja espacio para que la imagen "flote" sin salirse de ese fondo. */
+.lp-hero-visual{position:relative;isolation:isolate;background:var(--fondo);padding:16px 0}
 .lp-hero-foto{width:100%;mix-blend-mode:multiply}
 
 .lp-ola{display:block;width:100%;height:clamp(60px,9vw,140px);margin-bottom:-2px}
@@ -84,7 +83,9 @@ html:has(.lp){background:#e9f0f7}
 .lp-card h4{font-size:30px;font-weight:700;color:var(--azul)}
 .lp-card p{color:var(--gris);margin:4px 0 12px}
 .lp-foto{position:relative;isolation:isolate;background:var(--superficie);overflow:hidden}
-.lp-foto img{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;object-position:50% 8%;transition:transform .5s var(--ease-out)}
+.lp-foto img{position:absolute;inset:0;width:100%;height:100%;object-fit:contain;transition:transform .5s var(--ease-out)}
+/* Fotos con fondo propio: la imagen completa encima de su versión difuminada (sin franjas vacías) */
+.lp-foto:not(.recorte)::before{content:"";position:absolute;inset:-24px;z-index:-1;background:var(--img) center/cover;filter:blur(16px) saturate(1.1);opacity:.85}
 .lp-foto.recorte{background:var(--fondo)}
 .lp-foto.recorte img{object-fit:contain;mix-blend-mode:multiply;padding:12px}
 .lp-card-foto{display:grid;grid-template-columns:38% 1fr;align-items:stretch}
@@ -145,7 +146,6 @@ html:has(.lp){background:#e9f0f7}
   .lp-hero-texto>*{animation:lp-entra .7s var(--ease-entrada) backwards;animation-delay:calc(var(--d,0) * 70ms)}
   .lp-hero-visual{animation:lp-entra-foto .9s var(--ease-entrada) .15s both}
   .lp-hero-foto{animation:lp-flota 7s ease-in-out 1.1s infinite}
-  .lp-agua{animation:lp-respira 12s ease-in-out infinite alternate}
   /* La ola se mece y las burbujas suben */
   .ola-verde{animation:lp-ola 10s ease-in-out infinite alternate}
   .ola-azul{animation:lp-ola 13s ease-in-out infinite alternate-reverse}
@@ -160,7 +160,6 @@ html:has(.lp){background:#e9f0f7}
 @keyframes lp-entra{from{opacity:0;transform:translateY(20px)}}
 @keyframes lp-entra-foto{from{opacity:0;transform:translateY(24px) scale(.97)}}
 @keyframes lp-flota{50%{transform:translateY(-8px)}}
-@keyframes lp-respira{to{transform:scale(1.05) rotate(-1deg)}}
 @keyframes lp-ola{from{transform:translateX(-70px)}to{transform:translateX(70px)}}
 @keyframes lp-burbuja{0%{opacity:0;transform:translateY(0)}12%{opacity:1}80%{opacity:.7}100%{opacity:0;transform:translateY(-760px) translateX(14px)}}
 @keyframes lp-hoy{50%{box-shadow:0 0 0 6px rgba(255,211,26,.45)}}
