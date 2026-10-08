@@ -1,0 +1,184 @@
+@import url('https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@600;700;800&family=Barlow:wght@400;500;600;700&display=swap');
+
+/* Colores tomados de las piezas gráficas de Agua DM.
+   El fondo es un celeste pastel en vez de blanco puro para no cansar la vista. */
+.lp{--azul:#141a63;--azul-2:#1d3bb3;--verde:#4fa32c;--verde-osc:#3a7f1d;--amarillo:#ffd31a;--tinta:#10154a;--gris:#4c5576;--wsp:#1fa855;
+  --fondo:#e9f0f7;--fondo-2:#dae6f2;--superficie:#f4f7fb;--borde:#cfdcea;--suave:#c9d1f2;
+  --ease-out:cubic-bezier(.23,1,.32,1);--ease-entrada:cubic-bezier(.16,1,.3,1);
+  font-family:'Barlow',system-ui,sans-serif;color:var(--tinta);background:var(--fondo);font-size:17px;line-height:1.55;overflow-x:clip}
+html:has(.lp){background:#e9f0f7}
+@media (prefers-reduced-motion:no-preference){html:has(.lp){scroll-behavior:smooth}}
+/* Neutraliza los estilos globales del panel (header, section, p, h1, h2, button) dentro de la landing */
+.lp :where(header,section,footer,figure){background:none;border:0;border-radius:0;padding:0;margin:0}
+.lp :where(p){color:inherit;line-height:inherit;margin:0}
+.lp :where(h1,h2,h3,h4){font-family:'Barlow Condensed',sans-serif;margin:0;letter-spacing:0;line-height:1.02;text-wrap:balance}
+.lp :where(a){color:inherit}
+.lp :where(section){scroll-margin-top:84px}
+.lp :where(img){display:block;max-width:100%;height:auto}
+.lp :focus-visible{outline:3px solid var(--amarillo);outline-offset:3px;border-radius:6px}
+
+/* Encabezado */
+.lp-top{position:sticky;top:0;z-index:5;display:flex;align-items:center;gap:28px;padding:8px clamp(16px,5vw,64px);background:rgba(233,240,247,.86);backdrop-filter:blur(10px);border-bottom:1px solid var(--borde)}
+.lp-logo img{height:62px;width:auto}
+.lp-top nav{display:flex;gap:26px;margin-left:auto;font-weight:600}
+.lp-top nav a{text-decoration:none;color:var(--azul);padding:6px 0;background:linear-gradient(var(--verde),var(--verde)) left bottom/0 2px no-repeat;transition:background-size .25s var(--ease-out)}
+.lp-top nav a:hover{background-size:100% 2px}
+.lp-admin{border:0;background:none;padding:6px 4px;font:600 14px 'Barlow',sans-serif;color:var(--gris);cursor:pointer;text-decoration:underline;text-underline-offset:3px}
+.lp-admin:hover{color:var(--azul);background:none}
+
+/* Botones: respuesta inmediata al presionar */
+.lp-btn{display:inline-flex;align-items:center;gap:10px;padding:14px 22px;border-radius:999px;font-weight:700;text-decoration:none;transition:transform .16s var(--ease-out),background-color .2s ease,box-shadow .2s ease}
+.lp-btn:active{transform:scale(.97)}
+.lp-btn-wsp{background:var(--wsp);color:#fff;box-shadow:0 8px 20px -10px rgba(31,168,85,.8)}
+.lp-btn-linea{border:2px solid var(--azul);color:var(--azul)}
+.lp-top-cta{padding:10px 18px}
+@media (hover:hover) and (pointer:fine){
+  .lp-btn-wsp:hover{background:#178f47;transform:translateY(-1px)}
+  .lp-btn-linea:hover{background:var(--fondo-2)}
+}
+
+/* Inicio */
+.lp-hero{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.15fr);align-items:center;gap:clamp(24px,4vw,56px);padding:clamp(36px,6vw,80px) clamp(16px,5vw,64px) 16px;max-width:1360px;margin:0 auto}
+.lp-kicker{display:inline-block;font-weight:700;color:var(--verde-osc);margin-bottom:14px}
+.lp-hero h1{font-size:clamp(44px,5.8vw,84px);font-weight:800;text-transform:uppercase;color:var(--azul)}
+.lp-lead{font-size:clamp(18px,1.6vw,21px);color:var(--gris);margin:22px 0 30px;max-width:36ch;text-wrap:pretty}
+.lp-acciones{display:flex;flex-wrap:wrap;gap:12px}
+/* Los productos tienen fondo blanco: multiply lo funde con el pastel. El contenedor lleva
+   el mismo color del fondo para que la mezcla funcione aunque la animación lo aísle.
+   El padding deja espacio para que la imagen "flote" sin salirse de ese fondo. */
+.lp-hero-visual{position:relative;isolation:isolate;background:var(--fondo);padding:16px 0}
+.lp-hero-foto{width:100%;mix-blend-mode:multiply}
+
+.lp-ola{display:block;width:100%;height:clamp(60px,9vw,140px);margin-bottom:-2px}
+.ola-verde{fill:var(--verde)}
+.ola-azul{fill:var(--azul)}
+
+/* Días de reparto */
+.lp-reparto{position:relative;overflow:hidden;isolation:isolate;background:var(--azul);color:#fff;display:grid;grid-template-columns:minmax(0,1.3fr) minmax(0,.8fr);gap:clamp(28px,5vw,80px);align-items:center;padding:clamp(28px,5vw,64px) clamp(16px,5vw,64px) clamp(64px,8vw,104px)}
+.lp-reparto h2{font-size:clamp(36px,4.6vw,62px);font-weight:800;text-transform:uppercase;margin-bottom:28px}
+.lp-burbujas{position:absolute;inset:0;z-index:-1;pointer-events:none}
+.lp-burbujas span{position:absolute;bottom:-40px;left:var(--x);width:var(--s);height:var(--s);border-radius:50%;border:1.5px solid rgba(255,255,255,.22);background:radial-gradient(circle at 30% 30%,rgba(255,255,255,.25),transparent 60%);opacity:0}
+.lp-semana{list-style:none;margin:0;padding:0;display:grid;gap:10px;max-width:640px}
+.lp-semana li{display:grid;grid-template-columns:150px 1fr;align-items:center;background:var(--superficie);color:var(--azul);border-radius:999px;padding:6px 24px 6px 6px;font-weight:700}
+.lp-dia{display:flex;align-items:center;gap:8px;background:var(--azul-2);color:#fff;border-radius:999px;padding:10px 18px;font-family:'Barlow Condensed',sans-serif;font-size:21px;text-transform:uppercase}
+.lp-dia em{font-style:normal;font-family:'Barlow',sans-serif;font-size:12px;background:var(--amarillo);color:var(--tinta);border-radius:99px;padding:2px 8px;text-transform:none}
+.lp-semana li.hoy{box-shadow:0 0 0 3px var(--amarillo)}
+.lp-zona{padding-left:20px;font-size:19px}
+.lp-nota{margin-top:22px;color:var(--suave)}
+.lp-nota a{color:#fff;font-weight:700}
+.lp-repartidor{margin:0;background:var(--fondo);border-radius:120px 28px 28px 28px;overflow:hidden;border-bottom:10px solid var(--verde);isolation:isolate}
+.lp-repartidor img{width:100%;mix-blend-mode:multiply}
+.lp-repartidor figcaption{color:var(--azul);font-weight:700;padding:14px 22px 18px}
+
+/* Precios */
+.lp-precios{padding:clamp(56px,7vw,96px) clamp(16px,5vw,64px) clamp(64px,8vw,112px);max-width:1360px;margin:0 auto}
+.lp-precios h2{font-size:clamp(44px,5.6vw,76px);font-weight:800;text-transform:uppercase;color:var(--azul)}
+.lp-sub{color:var(--gris);margin-top:6px}
+.lp-precios h3{font-size:30px;font-weight:700;text-transform:uppercase;color:var(--azul);margin:48px 0 18px;display:flex;align-items:baseline;gap:12px;flex-wrap:wrap}
+.lp-precios h3 span{font-family:'Barlow',sans-serif;font-size:14px;text-transform:none;background:var(--verde);color:#fff;border-radius:6px;padding:3px 10px;font-weight:600}
+.lp-grid{display:grid;gap:18px}
+.lp-grid-2{grid-template-columns:repeat(2,minmax(0,1fr))}
+.lp-grid-3{grid-template-columns:repeat(3,minmax(0,1fr))}
+.lp-card{background:var(--fondo-2);border-radius:22px;overflow:hidden;transition:transform .25s var(--ease-out),box-shadow .25s ease}
+.lp-card h4{font-size:30px;font-weight:700;color:var(--azul)}
+.lp-card p{color:var(--gris);margin:4px 0 12px}
+.lp-foto{position:relative;isolation:isolate;background:var(--superficie);overflow:hidden}
+.lp-foto img{position:absolute;inset:0;width:100%;height:100%;object-fit:contain;transition:transform .5s var(--ease-out)}
+/* Fotos con fondo propio: la imagen completa encima de su versión difuminada (sin franjas vacías) */
+.lp-foto:not(.recorte)::before{content:"";position:absolute;inset:-24px;z-index:-1;background:var(--img) center/cover;filter:blur(16px) saturate(1.1);opacity:.85}
+.lp-foto.recorte{background:var(--fondo)}
+.lp-foto.recorte img{object-fit:contain;mix-blend-mode:multiply;padding:12px}
+.lp-card-foto{display:grid;grid-template-columns:38% 1fr;align-items:stretch}
+.lp-card-foto .lp-foto{min-height:240px;max-height:300px}
+.lp-card-foto>div{padding:22px 24px;align-self:center}
+.lp-card-pack{background:var(--azul);color:#fff;padding:0 0 24px;display:flex;flex-direction:column}
+.lp-card-pack .lp-foto{height:230px;margin-bottom:18px}
+.lp-card-pack h4,.lp-card-pack p,.lp-card-pack .lp-pedir{color:#fff;margin-left:22px;margin-right:22px}
+.lp-card-pack p{color:var(--suave)}
+.lp-card-pack .lp-precio{margin-left:22px;align-self:flex-start;box-shadow:4px 4px 0 var(--superficie)}
+.lp-card-pack .lp-pedir{margin-top:auto;padding-top:8px}
+.lp-precio{display:inline-flex;flex-direction:column;margin:6px 14px 10px 0;background:var(--amarillo);color:var(--azul);padding:6px 14px 4px;transform:skew(-8deg);font:800 28px/1 'Barlow Condensed',sans-serif;font-variant-numeric:tabular-nums;box-shadow:4px 4px 0 var(--azul);transition:transform .2s var(--ease-out)}
+.lp-precio small{font:600 12px/1.4 'Barlow',sans-serif;text-transform:uppercase;letter-spacing:.04em}
+.lp-pedir{display:block;margin-top:8px;font-weight:700;color:var(--verde-osc);text-decoration:none}
+.lp-pedir:hover{text-decoration:underline}
+@media (hover:hover) and (pointer:fine){
+  .lp-card:hover{transform:translateY(-4px);box-shadow:0 18px 34px -22px rgba(20,26,99,.55)}
+  .lp-card:hover .lp-foto img{transform:scale(1.04)}
+  .lp-card:hover .lp-precio{transform:skew(-8deg) rotate(-2deg) translateY(-2px)}
+}
+
+/* Contacto */
+.lp-contacto{background:var(--verde);color:#fff;text-align:center;padding:clamp(48px,6vw,80px) 16px clamp(56px,7vw,88px)}
+.lp-contacto h2{font-size:clamp(40px,5vw,64px);font-weight:800;text-transform:uppercase}
+.lp-contacto p{max-width:46ch;margin:12px auto 26px}
+.lp-numero{display:inline-flex;align-items:center;gap:12px;background:var(--superficie);color:var(--azul);border-radius:999px;padding:14px 28px;font:800 clamp(24px,3vw,34px)/1 'Barlow Condensed',sans-serif;font-variant-numeric:tabular-nums;text-decoration:none;transition:transform .16s var(--ease-out)}
+.lp-numero svg{color:var(--wsp);width:28px;height:28px}
+.lp-numero:active{transform:scale(.97)}
+@media (hover:hover) and (pointer:fine){.lp-numero:hover{transform:translateY(-2px)}}
+
+/* Pie */
+.lp-pie{background:var(--azul);color:var(--suave);display:grid;grid-template-columns:auto 1fr 1fr auto;gap:32px;align-items:start;padding:40px clamp(16px,5vw,64px)}
+.lp-pie>img{height:96px;width:auto}
+.lp-pie strong{display:block;color:#fff;margin-bottom:6px}
+.lp-pie a{color:#fff}
+.lp-pie .lp-admin{color:var(--suave)}
+.lp-pie .lp-admin:hover{color:#fff}
+
+/* QR de WhatsApp: en computador se escanea con el celular */
+.lp-qr{display:block;width:100%;height:auto;border-radius:12px}
+.lp-contacto-cta{display:flex;align-items:center;justify-content:center;gap:28px;flex-wrap:wrap}
+.lp-qr-contacto{margin:0;width:150px;background:var(--superficie);border-radius:18px;padding:10px 10px 6px;color:var(--azul);font-weight:600;font-size:13px}
+.lp-qr-contacto figcaption{text-align:center;padding-top:2px}
+@media (hover:none),(pointer:coarse){.lp-qr-contacto{display:none}}
+.lp-velo{position:fixed;inset:0;z-index:20;background:rgba(16,21,74,.6);display:grid;place-items:center;padding:16px;animation:lp-aparece .2s ease-out}
+.lp-ventana{position:relative;width:min(400px,100%);max-height:calc(100vh - 32px);overflow:auto;background:var(--superficie);border-radius:24px;padding:28px;text-align:center;border-bottom:8px solid var(--verde);animation:lp-sube .26s var(--ease-out)}
+.lp-ventana h3{font-size:32px;font-weight:800;text-transform:uppercase;color:var(--azul);padding:0 28px}
+.lp-ventana p{color:var(--gris);margin:10px 0 12px}
+.lp-ventana blockquote{margin:0 0 16px;background:var(--fondo-2);border-radius:14px;padding:10px 14px;font-weight:600;color:var(--azul)}
+.lp-ventana .lp-qr{width:220px;margin:0 auto 18px;border:1px solid var(--borde)}
+.lp-cerrar{position:absolute;top:12px;right:12px;width:40px;height:40px;padding:0;border:0;border-radius:50%;background:var(--fondo-2);color:var(--azul);font-size:26px;line-height:1;cursor:pointer;transition:transform .16s var(--ease-out)}
+.lp-cerrar:hover{background:var(--borde)}
+.lp-cerrar:active{transform:scale(.94)}
+
+/* Movimiento: solo si la persona no pidió reducirlo en su sistema */
+@media (prefers-reduced-motion:no-preference){
+  /* Entrada escalonada del inicio */
+  .lp-hero-texto>*{animation:lp-entra .7s var(--ease-entrada) backwards;animation-delay:calc(var(--d,0) * 70ms)}
+  .lp-hero-visual{animation:lp-entra-foto .9s var(--ease-entrada) .15s both}
+  .lp-hero-foto{animation:lp-flota 7s ease-in-out 1.1s infinite}
+  /* La ola se mece y las burbujas suben */
+  .ola-verde{animation:lp-ola 10s ease-in-out infinite alternate}
+  .ola-azul{animation:lp-ola 13s ease-in-out infinite alternate-reverse}
+  .lp-burbujas span{animation:lp-burbuja var(--t) linear var(--d) infinite}
+  .lp-semana li.hoy{animation:lp-hoy 2.8s ease-in-out infinite}
+  /* Aparición al hacer scroll (la clase lp-js la pone el componente) */
+  /* fill-mode backwards: al terminar no deja transform fijo, así el :hover de las tarjetas sigue funcionando */
+  .lp-js [data-revelar]:not(.visible){opacity:0}
+  .lp-js [data-revelar].visible{animation:lp-entra .7s var(--ease-entrada) backwards;animation-delay:calc(var(--i,0) * 70ms)}
+}
+@media (prefers-reduced-motion:reduce){.lp *{transition-duration:.01ms!important}.lp-velo,.lp-ventana{animation:none}}
+@keyframes lp-entra{from{opacity:0;transform:translateY(20px)}}
+@keyframes lp-entra-foto{from{opacity:0;transform:translateY(24px) scale(.97)}}
+@keyframes lp-flota{50%{transform:translateY(-8px)}}
+@keyframes lp-ola{from{transform:translateX(-70px)}to{transform:translateX(70px)}}
+@keyframes lp-burbuja{0%{opacity:0;transform:translateY(0)}12%{opacity:1}80%{opacity:.7}100%{opacity:0;transform:translateY(-760px) translateX(14px)}}
+@keyframes lp-hoy{50%{box-shadow:0 0 0 6px rgba(255,211,26,.45)}}
+@keyframes lp-aparece{from{opacity:0}}
+@keyframes lp-sube{from{opacity:0;transform:translateY(12px) scale(.97)}}
+
+@media (max-width:900px){
+  .lp-top{gap:12px}
+  .lp-top nav{display:none}
+  .lp-top-cta{margin-left:auto}
+  .lp-logo img{height:48px}
+  .lp-hero,.lp-reparto{grid-template-columns:1fr}
+  .lp-repartidor{max-width:360px}
+  .lp-grid-2,.lp-grid-3{grid-template-columns:1fr}
+  .lp-pie{grid-template-columns:1fr}
+}
+@media (max-width:480px){
+  .lp-semana li{grid-template-columns:1fr;border-radius:20px;padding:6px 6px 12px}
+  .lp-dia{justify-content:space-between}
+  .lp-zona{padding:8px 0 0 12px}
+  .lp-card-foto{grid-template-columns:1fr}
+}
