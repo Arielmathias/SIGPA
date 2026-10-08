@@ -23,6 +23,7 @@ El frontend no usa Supabase ni necesita sus claves: la autenticación pasa por e
 - El refresh token se guarda en `sessionStorage` (sobrevive a recargar la página y se borra al cerrar la pestaña); el access token solo en memoria. El token se renueva antes de expirar y, si el backend responde 401, se renueva una vez y se reintenta; si la renovación es rechazada, se vuelve al login.
 - Todas las llamadas FastAPI llevan el JWT de la sesión.
 - GET `/pedidos`, GET `/pedidos/{id}`, GET `/clientes`.
+- Landing pública: GET `/productos` (solo lectura, sin sesión) para nombres y precios, a través del backend; nunca se conecta a Supabase. Solo se usan nombre y precio. Mientras Render despierta se muestran los últimos precios conocidos (`src/catalogo.js`, `PRECIOS_RESPALDO` en `src/marca.js`). Cada tarjeta se asocia a un producto por su nombre exacto en la tabla `producto`.
 - GET `/rutas/pedidos-pendientes` y POST `/rutas/planificar` con `{pedido_ids:[...]}`.
 - El panel pide confirmación antes de planificar porque el endpoint también confirma pedidos y guarda el orden.
 - Los errores no se sustituyen por datos ficticios. Los indicadores corresponden a todos los registros devueltos, no a una jornada.
